@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+
+# Build outputs — all dist dirs at any depth
+**/dist/
+
+# Compiled artifacts that end up alongside source files
+packages/**/*.js
+packages/**/*.d.ts
+packages/**/*.js.map
+packages/**/*.d.ts.map
+# But keep pipeline.py and docs-skill (they are real source)
+!packages/**/pipeline.py
+!packages/**/docs-skill/**
+
+# Generated docs (runtime output, not source)
+repomap-docs/
+
+# Graphify intermediate outputs
+graphify-out/
+**/graphify-out/
+
+# Repomap config knowledge cache
+**/data/knowledge.json
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+
+# Claude internal
+.claude/scheduled_tasks.lock

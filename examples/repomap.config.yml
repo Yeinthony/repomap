@@ -1,0 +1,35 @@
+# repomap.config.yml
+# Drop this file at the root of your project and run: repomap generate
+
+repos:
+  - path: ./services/auth
+    name: Auth Service
+    description: Handles user authentication, JWT tokens, and sessions
+
+  - path: ./services/payments
+    name: Payments Service
+    description: Stripe integration, subscription management
+
+  - path: ./services/api-gateway
+    name: API Gateway
+    description: Main entry point, request routing, rate limiting
+
+  - path: ./services/notifications
+    name: Notifications Service
+    description: Email, push, and in-app notifications via events
+
+  - path: ./services/users
+    name: Users Service
+    description: User profiles, preferences, CRUD
+
+output:
+  path: ./docs
+  format: html    # html | markdown | json
+
+ai:
+  provider: claude               # claude | openai | ollama | gemini
+  model: claude-sonnet-4-20250514
+  # apiKey: sk-...               # or use ANTHROPIC_API_KEY env var
+
+watch: false      # set true to auto-regenerate on file changes
+language: en      # en | es

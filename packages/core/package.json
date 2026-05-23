@@ -1,0 +1,21 @@
+{
+  "name": "@repomap/core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc && mkdir -p dist/graphify dist/render && cp src/graphify/pipeline.py dist/graphify/pipeline.py && cp -R src/render/docs-skill dist/render/docs-skill",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "fast-glob": "^3.3.0",
+    "chokidar": "^3.6.0",
+    "simple-git": "^3.22.0",
+    "yaml": "^2.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  }
+}

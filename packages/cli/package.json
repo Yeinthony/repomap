@@ -1,0 +1,28 @@
+{
+  "name": "@repomap/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "CLI for repomap - AI-powered documentation generator",
+  "bin": {
+    "repomap": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@repomap/core": "*",
+    "@repomap/adapter-claude": "*",
+    "@repomap/adapter-claude-code": "*",
+    "commander": "^12.0.0",
+    "chalk": "^5.3.0",
+    "ora": "^8.0.0",
+    "yaml": "^2.4.0",
+    "open": "^10.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.7.0"
+  }
+}
