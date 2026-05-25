@@ -86,17 +86,15 @@ export function compactForLLM(graph: CodeGraph): string {
       lines.push(`Top dependencies: ${repo.dependencies.slice(0, 15).join(', ')}`)
     }
 
-    // Per-file symbol map (for API reference generation)
-    const fileSymbols = buildFileSymbolMap(graph.graphify, repo.name)
-    if (fileSymbols.size > 0) {
-      lines.push('Symbol map (file → exported symbols, callers, calls):')
-      for (const [file, symbols] of fileSymbols) {
-        const symSummary = symbols.map((s) => {
-          const callers = s.callerCount > 0 ? ` [${s.callerCount}✗]` : ''
-          const calls = s.calls.length > 0 ? ` →${s.calls.slice(0, 4).join(',')}` : ''
-          return `${s.label}${callers}${calls}`
-        }).join(' | ')
-        lines.push(`  ${file}: ${symSummary}`)
+    // Per-file symbol map from static TypeScript scan (capped to keep prompt lean)
+    if (repo.exportedSymbols && repo.exportedSymbols.length > 0) {
+      lines.push('Exported symbols (static scan, file → symbols):')
+      for (const fe of repo.exportedSymbols.slice(0, 20)) {
+        const symList = fe.symbols
+          .slice(0, 8)
+          .map((s) => `${s.async ? 'async ' : ''}${s.kind} ${s.name}`)
+          .join(' | ')
+        lines.push(`  ${fe.file}: ${symList}`)
       }
     }
 

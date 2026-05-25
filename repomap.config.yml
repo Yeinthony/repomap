@@ -20,7 +20,7 @@ output:
 ai:
   provider: claude-code
   model: sonnet
-  maxBudgetUsd: 1.00
+  maxBudgetUsd: 2.00
 
 watch: false
 language: es

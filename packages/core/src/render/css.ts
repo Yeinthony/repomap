@@ -743,22 +743,20 @@ export function getSharedCSS(): string {
   /* ── Sidebar sub-links (API ref items) ── */
   .sidebar-sub-link {
     display: block;
-    padding: 6px 12px 6px 24px;
+    padding: 7px 12px;
     border-radius: 6px;
     text-decoration: none;
     color: var(--text-faint);
     font-size: 13.5px;
     font-weight: 400;
     transition: background-color 120ms, color 120ms;
-    border-left: 2px solid var(--border);
-    margin-left: 14px;
-    margin-bottom: 2px;
+    margin-bottom: 0;
   }
-  .sidebar-sub-link:hover { color: var(--text); border-left-color: var(--border-strong); }
+  .sidebar-sub-link:hover { background: var(--surface-2); color: var(--text); }
   .sidebar-sub-link.active {
     color: var(--accent);
-    border-left-color: var(--accent);
     background: var(--accent-soft);
+    font-weight: 500;
   }
 
   /* ── Symbol cards (API reference) ── */

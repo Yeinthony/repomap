@@ -82,6 +82,8 @@ export interface RepoSummary {
   /** Selected fields from package.json / pyproject.toml — what the package
    *  declares about itself: description, scripts, main/bin entry points. */
   packageMeta?: PackageMeta
+  /** Static scan of exported symbols per file (regex, no compiler). */
+  exportedSymbols?: Array<{ file: string; symbols: Array<{ name: string; kind: string; async: boolean; line: number }> }>
 }
 
 export interface PackageMeta {

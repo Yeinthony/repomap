@@ -4,6 +4,7 @@ import fg from 'fast-glob'
 import type { PackageMeta, RepoConfig, RepoSummary } from '../types.js'
 import { detectEndpoints } from './endpoints.js'
 import { detectServiceUrls } from './service-urls.js'
+import { scanRepoExports } from './ts-scanner.js'
 
 const LANG_BY_EXT: Record<string, string> = {
   '.ts': 'typescript', '.tsx': 'typescript',
@@ -24,10 +25,11 @@ export async function buildRepoSummary(repo: RepoConfig): Promise<RepoSummary> {
     throw new Error(`Repo path not found: ${absPath}`)
   }
 
-  const [endpoints, languages, dependencies] = await Promise.all([
+  const [endpoints, languages, dependencies, exportedSymbols] = await Promise.all([
     detectEndpoints(absPath),
     detectLanguages(absPath),
     Promise.resolve(extractDependencies(absPath)),
+    scanRepoExports(absPath),
   ])
   const { mappings, dockerServiceName } = detectServiceUrls(absPath)
 
@@ -42,6 +44,7 @@ export async function buildRepoSummary(repo: RepoConfig): Promise<RepoSummary> {
     dockerService: dockerServiceName,
     readme: readReadme(absPath),
     packageMeta: readPackageMeta(absPath),
+    exportedSymbols: exportedSymbols.length > 0 ? exportedSymbols : undefined,
   }
 }
 
