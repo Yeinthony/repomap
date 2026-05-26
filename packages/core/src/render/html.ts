@@ -1,6 +1,14 @@
 import fs from 'fs'
 import path from 'path'
-import type { ApiReferenceSection, CodeGraph, Documentation, ServiceDoc, SymbolDoc } from '../types.js'
+import type {
+  ApiReferenceSection,
+  CodeGraph,
+  Documentation,
+  ServiceDoc,
+  SymbolDoc,
+  TutorialDoc,
+  TroubleshootingDoc,
+} from '../types.js'
 import { t, type Lang } from './i18n.js'
 import { getSharedCSS, getFontImports } from './css.js'
 import { getMermaidInit } from './mermaid-viewer.js'
@@ -17,7 +25,32 @@ export function generateHTML(
   outputPath: string,
   lang: Lang | undefined = 'en'
 ): void {
+  augmentWithReferencedTypes(docs, graph, lang ?? 'en')
+  const typeIndex = buildTypeIndex(docs)
+
   fs.writeFileSync(path.join(outputPath, 'index.html'), buildIndexHTML(docs, lang))
+
+  // Getting Started pages (only render those provided by the LLM)
+  if (docs.gettingStarted) {
+    const gs = docs.gettingStarted
+    const gsDir = path.join(outputPath, 'get-started')
+    fs.mkdirSync(gsDir, { recursive: true })
+    const pages: Array<{ slug: string; doc: TutorialDoc | TroubleshootingDoc | undefined; kind: 'tutorial' | 'troubleshooting' }> = [
+      { slug: 'quick-start',     doc: gs.quickStart,     kind: 'tutorial' },
+      { slug: 'installation',    doc: gs.installation,   kind: 'tutorial' },
+      { slug: 'first-project',   doc: gs.firstProject,   kind: 'tutorial' },
+      { slug: 'troubleshooting', doc: gs.troubleshooting, kind: 'troubleshooting' },
+    ]
+    for (const p of pages) {
+      if (!p.doc) continue
+      const subDir = path.join(gsDir, p.slug)
+      fs.mkdirSync(subDir, { recursive: true })
+      const html = p.kind === 'troubleshooting'
+        ? buildTroubleshootingHTML(p.doc as TroubleshootingDoc, p.slug, docs, lang ?? 'en')
+        : buildTutorialHTML(p.doc as TutorialDoc, p.slug, docs, lang ?? 'en')
+      fs.writeFileSync(path.join(subDir, 'index.html'), html)
+    }
+  }
 
   for (const service of docs.services) {
     const serviceDir = path.join(outputPath, slugify(service.name))
@@ -28,6 +61,16 @@ export function generateHTML(
       const apiDir = path.join(serviceDir, 'api')
       fs.mkdirSync(apiDir, { recursive: true })
       fs.writeFileSync(path.join(apiDir, 'index.html'), buildApiRefHTML(service, docs, lang))
+
+      for (const section of service.apiReference.sections ?? []) {
+        const sectionSlug = slugify(section.title)
+        const sectionDir = path.join(apiDir, sectionSlug)
+        fs.mkdirSync(sectionDir, { recursive: true })
+        fs.writeFileSync(
+          path.join(sectionDir, 'index.html'),
+          buildApiSectionHTML(service, section, docs, lang, typeIndex)
+        )
+      }
     }
   }
 
@@ -256,31 +299,45 @@ function buildServiceHTML(service: ServiceDoc, docs: Documentation, graph: CodeG
 
 function buildApiRefHTML(service: ServiceDoc, docs: Documentation, lang: Lang): string {
   const ref = service.apiReference!
-  const tocItems: TocItem[] = []
-  if (ref.sections) {
-    for (const section of ref.sections) {
-      const id = slugify(section.title)
-      tocItems.push({ id, label: section.title, level: 2 })
-    }
-  }
+  const sections = ref.sections ?? []
 
-  const sectionsHTML = (ref.sections ?? []).map((section) => {
-    const id = slugify(section.title)
+  const cardsHTML = sections.map((section) => {
+    const slug = slugify(section.title)
+    const count = (section.symbols ?? []).length
+    const noun = count === 1 ? t(lang, 'apiRefSymbolOne') : t(lang, 'apiRefSymbolMany')
     return `
-    <section class="section symbol-section" id="${id}">
-      <h2>${escapeHTML(section.title)}</h2>
-      ${section.description ? `<p class="symbol-section-intro">${escapeHTML(section.description)}</p>` : ''}
-      ${(section.symbols ?? []).length === 0
-        ? `<p class="symbol-section-intro">${t(lang, 'apiRefNoSymbols')}</p>`
-        : section.symbols.map((sym) => renderSymbolCard(sym, lang)).join('')}
-    </section>`
+    <a href="./${slug}/" class="service-card api-section-card">
+      <div class="card-icon">§</div>
+      <div class="card-content">
+        <h3>${escapeHTML(section.title)}</h3>
+        ${section.description ? `<p>${escapeHTML(section.description)}</p>` : ''}
+        <span class="card-meta">${count} ${noun}</span>
+      </div>
+    </a>`
   }).join('')
+
+  const tocHTML = sections.length === 0 ? '' : `
+  <aside class="toc">
+    <div class="toc-label">${t(lang, 'onThisPage')}</div>
+    <ol class="toc-numbered">
+      ${sections.map((section, idx) => {
+        const slug = slugify(section.title)
+        const idx2 = String(idx + 1).padStart(2, '0')
+        const count = (section.symbols ?? []).length
+        return `<li><a href="./${slug}/">
+          <span class="toc-num">${idx2}</span>
+          <span class="toc-num-label">${escapeHTML(section.title)}</span>
+          <span class="toc-num-meta">${count}</span>
+        </a></li>`
+      }).join('')}
+    </ol>
+  </aside>`
 
   return shell({
     lang,
     title: `${service.name} — ${t(lang, 'apiReferenceTitle')} — ${docs.overview.title}`,
     sidebar: buildSidebar(docs, `api:${service.name}`, lang, '../../'),
-    tocItems,
+    tocHTML,
     body: `
     <div class="page-header">
       <div class="breadcrumb">
@@ -292,15 +349,442 @@ function buildApiRefHTML(service: ServiceDoc, docs: Documentation, lang: Lang): 
       ${ref.intro ? `<p class="page-subtitle">${escapeHTML(ref.intro)}</p>` : ''}
     </div>
 
-    ${sectionsHTML || `<p class="symbol-section-intro">${t(lang, 'apiRefNoSymbols')}</p>`}
+    ${sections.length === 0
+      ? `<p class="symbol-section-intro">${t(lang, 'apiRefNoSymbols')}</p>`
+      : `
+    <section class="section">
+      <p class="api-sections-lead">${t(lang, 'apiRefBrowseSections')}</p>
+      <div class="service-grid">${cardsHTML}</div>
+    </section>`}
 
     ${footerHTML(docs, lang)}`,
   })
 }
 
-function renderSymbolCard(sym: SymbolDoc, lang: Lang): string {
+function buildApiSectionHTML(
+  service: ServiceDoc,
+  section: ApiReferenceSection,
+  docs: Documentation,
+  lang: Lang,
+  typeIndex: TypeIndex
+): string {
+  const sectionSlug = slugify(section.title)
+  const symbols = section.symbols ?? []
+  const current: SymbolLocation = {
+    serviceSlug: slugify(service.name),
+    sectionSlug,
+    symbolSlug: '',
+  }
+
+  const tocHTML = `
+  <aside class="toc">
+    <div class="toc-label">${t(lang, 'onThisPage')}</div>
+    <ul class="toc-symbol-list">
+      ${symbols.length === 0
+        ? `<li class="toc-empty">${t(lang, 'apiRefNoSymbols')}</li>`
+        : symbols.map((sym) => `
+        <li>
+          <a href="#sym-${slugify(sym.name)}" data-toc-id="sym-${slugify(sym.name)}">
+            <span class="toc-sym-kind toc-sym-kind-${sym.kind}">${kindGlyph(sym.kind)}</span>
+            <span class="toc-sym-name">${escapeHTML(sym.name)}</span>
+          </a>
+        </li>`).join('')}
+    </ul>
+  </aside>`
+
+  return shell({
+    lang,
+    title: `${section.title} — ${service.name} — ${t(lang, 'apiReferenceTitle')} — ${docs.overview.title}`,
+    sidebar: buildSidebar(docs, `api:${service.name}:${sectionSlug}`, lang, '../../../'),
+    tocHTML,
+    body: `
+    <div class="page-header">
+      <div class="breadcrumb">
+        <a href="../../../">${t(lang, 'breadcrumbHome')}</a> /
+        <a href="../../">${escapeHTML(service.name)}</a> /
+        <a href="../">${t(lang, 'apiReferenceTitle')}</a> /
+        ${escapeHTML(section.title)}
+      </div>
+      <h1>${escapeHTML(section.title)}</h1>
+      ${section.description ? `<p class="page-subtitle">${escapeHTML(section.description)}</p>` : ''}
+    </div>
+
+    <section class="section">
+      ${symbols.length === 0
+        ? `<p class="symbol-section-intro">${t(lang, 'apiRefNoSymbols')}</p>`
+        : symbols.map((sym) => renderSymbolCard(sym, lang, typeIndex, current)).join('')}
+    </section>
+
+    ${footerHTML(docs, lang)}`,
+  })
+}
+
+// ── Type cross-linking ──────────────────────────────────────────────────────
+// Build a global { TypeName → location } index and linkify type strings so a
+// reader can click `RepoConfig` in a param table and jump to its symbol card.
+
+interface SymbolLocation {
+  serviceSlug: string
+  sectionSlug: string
+  symbolSlug: string
+}
+
+type TypeIndex = Map<string, SymbolLocation>
+
+function buildTypeIndex(docs: Documentation): TypeIndex {
+  const idx: TypeIndex = new Map()
+  for (const service of docs.services) {
+    const serviceSlug = slugify(service.name)
+    for (const section of service.apiReference?.sections ?? []) {
+      const sectionSlug = slugify(section.title)
+      for (const sym of section.symbols ?? []) {
+        if (idx.has(sym.name)) continue
+        idx.set(sym.name, { serviceSlug, sectionSlug, symbolSlug: slugify(sym.name) })
+      }
+    }
+  }
+  return idx
+}
+
+function resolveSymbolHref(current: SymbolLocation, target: SymbolLocation): string {
+  if (current.serviceSlug === target.serviceSlug && current.sectionSlug === target.sectionSlug) {
+    return `#sym-${target.symbolSlug}`
+  }
+  if (current.serviceSlug === target.serviceSlug) {
+    return `../${target.sectionSlug}/#sym-${target.symbolSlug}`
+  }
+  return `../../../${target.serviceSlug}/api/${target.sectionSlug}/#sym-${target.symbolSlug}`
+}
+
+function linkifyType(typeStr: string, index: TypeIndex, current: SymbolLocation): string {
+  const tokenRe = /([A-Za-z_$][A-Za-z0-9_$]*)/g
+  let out = ''
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = tokenRe.exec(typeStr)) !== null) {
+    const tok = m[1]
+    const start = m.index
+    if (start > last) out += escapeHTML(typeStr.slice(last, start))
+    const target = index.get(tok)
+    if (target) {
+      const href = resolveSymbolHref(current, target)
+      out += `<a class="type-link" href="${href}">${escapeHTML(tok)}</a>`
+    } else {
+      out += escapeHTML(tok)
+    }
+    last = start + tok.length
+  }
+  if (last < typeStr.length) out += escapeHTML(typeStr.slice(last))
+  return out
+}
+
+// ── Source-extracted type stubs ─────────────────────────────────────────────
+// The LLM doesn't always document every composite type referenced in params.
+// We bridge that gap by reading the .ts source for any referenced-but-undocumented
+// type and synthesizing a SymbolDoc so it shows up in the rendered docs (and
+// becomes linkable via the type cross-link system). Zero LLM tokens involved.
+
+function extractTypeDefinition(absFile: string, line1Indexed: number): string | null {
+  let text: string
+  try {
+    text = fs.readFileSync(absFile, 'utf8')
+  } catch {
+    return null
+  }
+  const lines = text.split('\n')
+  if (line1Indexed <= 0 || line1Indexed > lines.length) return null
+  const start = line1Indexed - 1
+
+  let braceDepth = 0
+  let parenDepth = 0
+  let bracketDepth = 0
+  let openedBrace = false
+  const captured: string[] = []
+
+  for (let i = start; i < Math.min(lines.length, start + 100); i++) {
+    const l = lines[i]
+    captured.push(l)
+    for (const ch of l) {
+      if (ch === '{') { braceDepth++; openedBrace = true }
+      else if (ch === '}') braceDepth--
+      else if (ch === '(') parenDepth++
+      else if (ch === ')') parenDepth--
+      else if (ch === '[') bracketDepth++
+      else if (ch === ']') bracketDepth--
+    }
+    const allClosed = braceDepth === 0 && parenDepth === 0 && bracketDepth === 0
+    if (openedBrace && allClosed) break
+    if (!openedBrace && allClosed) {
+      const stripped = l.replace(/\/\/.*$/, '').replace(/\/\*.*?\*\//g, '').trim()
+      if (stripped.endsWith(';')) break
+    }
+  }
+  return captured.join('\n').replace(/\s+$/, '')
+}
+
+function augmentWithReferencedTypes(docs: Documentation, graph: CodeGraph, lang: Lang): void {
+  // 1. Collect PascalCase identifiers referenced in params / returns.
+  const referenced = new Set<string>()
+  const harvest = (s: string | undefined | null) => {
+    if (!s) return
+    const re = /([A-Z][A-Za-z0-9_$]*)/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(s)) !== null) referenced.add(m[1])
+  }
+  for (const svc of docs.services) {
+    for (const section of svc.apiReference?.sections ?? []) {
+      for (const sym of section.symbols ?? []) {
+        for (const p of sym.params ?? []) harvest(p.type)
+        harvest(sym.returns)
+      }
+    }
+  }
+  if (referenced.size === 0) return
+
+  // 2. Set of names already documented by the LLM.
+  const documented = new Set<string>()
+  for (const svc of docs.services) {
+    for (const section of svc.apiReference?.sections ?? []) {
+      for (const sym of section.symbols ?? []) documented.add(sym.name)
+    }
+  }
+
+  // 3. Source-index: name → location pulled from static scanner output.
+  const sourceIdx = new Map<string, { repoName: string; absFile: string; relFile: string; line: number; kind: string }>()
+  for (const repo of graph.repos) {
+    const repoAbs = path.resolve(repo.path)
+    for (const fe of repo.exportedSymbols ?? []) {
+      for (const sym of fe.symbols) {
+        if (sym.kind !== 'interface' && sym.kind !== 'type' && sym.kind !== 'enum') continue
+        if (sourceIdx.has(sym.name)) continue
+        sourceIdx.set(sym.name, {
+          repoName: repo.name,
+          absFile: path.join(repoAbs, fe.file),
+          relFile: fe.file,
+          line: sym.line,
+          kind: sym.kind === 'enum' ? 'type' : sym.kind,
+        })
+      }
+    }
+  }
+
+  // 4. Synthesize stub SymbolDocs for missing-but-source-known types.
+  const synthBySvc = new Map<string, SymbolDoc[]>()
+  for (const name of referenced) {
+    if (documented.has(name)) continue
+    const entry = sourceIdx.get(name)
+    if (!entry) continue
+    const svc = docs.services.find((s) => matchService(entry.repoName, s.name))
+    if (!svc) continue
+    const defn = extractTypeDefinition(entry.absFile, entry.line)
+    if (!defn) continue
+    const stub: SymbolDoc = {
+      name,
+      kind: entry.kind as SymbolDoc['kind'],
+      signature: defn,
+      description: lang === 'es'
+        ? 'Definición extraída del código fuente.'
+        : 'Pulled from source code.',
+      sourceFile: entry.relFile,
+    }
+    const list = synthBySvc.get(svc.name) ?? []
+    list.push(stub)
+    synthBySvc.set(svc.name, list)
+  }
+
+  // 5. Append a "Tipos referenciados" / "Referenced types" section per service.
+  for (const svc of docs.services) {
+    const stubs = synthBySvc.get(svc.name)
+    if (!stubs || stubs.length === 0) continue
+    if (!svc.apiReference) continue
+    stubs.sort((a, b) => a.name.localeCompare(b.name))
+    svc.apiReference.sections.push({
+      title: lang === 'es' ? 'Tipos referenciados' : 'Referenced types',
+      description: lang === 'es'
+        ? 'Tipos compuestos extraídos del código fuente. Aparecen referenciados en parámetros o retornos pero no fueron documentados directamente por el modelo.'
+        : 'Composite types pulled from source. They appear in params or returns but were not directly documented by the model.',
+      symbols: stubs,
+    })
+  }
+}
+
+// ── Getting Started pages ────────────────────────────────────────────────────
+
+function buildTutorialHTML(
+  tutorial: TutorialDoc,
+  slug: string,
+  docs: Documentation,
+  lang: Lang
+): string {
+  const steps = tutorial.steps ?? []
+  const tocItems: TocItem[] = steps.map((s, i) => ({
+    id: `step-${i + 1}`,
+    label: s.heading,
+    level: 2,
+  }))
+
+  const sidebarLabel = sidebarGsLabel(slug, lang)
+
+  const body = `
+    <div class="page-header">
+      <div class="breadcrumb">
+        <a href="../../">${t(lang, 'breadcrumbHome')}</a> /
+        ${t(lang, 'sidebarGetStarted')} /
+        ${escapeHTML(sidebarLabel)}
+      </div>
+      <h1>${escapeHTML(tutorial.title || sidebarLabel)}</h1>
+      ${tutorial.summary ? `<p class="page-subtitle">${escapeHTML(tutorial.summary)}</p>` : ''}
+    </div>
+
+    ${steps.length === 0 ? `<p class="symbol-section-intro">—</p>` : steps.map((step, i) => {
+      const idx = i + 1
+      const id = `step-${idx}`
+      const cleanHeading = (step.heading ?? '').replace(/^\s*\d+[.)]\s+/, '')
+      return `
+      <section class="section tutorial-step" id="${id}">
+        <header class="tutorial-step-head">
+          <span class="tutorial-step-marker">${String(idx).padStart(2, '0')}</span>
+          <h2>${escapeHTML(cleanHeading)}</h2>
+        </header>
+        ${renderProse(step.description)}
+        ${step.code ? renderTutorialCode(step.code) : ''}
+        ${step.note ? renderTutorialNote(step.note, step.noteKind ?? 'info', lang) : ''}
+      </section>`
+    }).join('')}
+
+    ${footerHTML(docs, lang)}`
+
+  return shell({
+    lang,
+    title: `${tutorial.title || sidebarLabel} — ${docs.overview.title}`,
+    sidebar: buildSidebar(docs, `gs:${slug}`, lang, '../../'),
+    tocItems,
+    body,
+  })
+}
+
+function buildTroubleshootingHTML(
+  ts: TroubleshootingDoc,
+  slug: string,
+  docs: Documentation,
+  lang: Lang
+): string {
+  const items = ts.items ?? []
+  const tocItems: TocItem[] = items.map((it, i) => ({
+    id: `issue-${i + 1}`,
+    label: it.problem,
+    level: 2,
+  }))
+
+  const sidebarLabel = t(lang, 'sidebarTroubleshooting')
+
+  const body = `
+    <div class="page-header">
+      <div class="breadcrumb">
+        <a href="../../">${t(lang, 'breadcrumbHome')}</a> /
+        ${t(lang, 'sidebarGetStarted')} /
+        ${escapeHTML(sidebarLabel)}
+      </div>
+      <h1>${escapeHTML(ts.title || sidebarLabel)}</h1>
+      ${ts.summary ? `<p class="page-subtitle">${escapeHTML(ts.summary)}</p>` : ''}
+    </div>
+
+    ${items.length === 0 ? `<p class="symbol-section-intro">—</p>` : `
+    <section class="section troubleshooting-list">
+      ${items.map((it, i) => {
+        const id = `issue-${i + 1}`
+        return `
+        <article class="troubleshoot-item" id="${id}">
+          <header class="troubleshoot-head">
+            <span class="troubleshoot-label">${t(lang, 'troubleshootingProblem')}</span>
+            <h2 class="troubleshoot-problem">${escapeHTML(it.problem)}</h2>
+          </header>
+          ${it.cause ? `
+          <div class="troubleshoot-cause">
+            <div class="troubleshoot-sub-label">${t(lang, 'troubleshootingCause')}</div>
+            <p>${escapeHTML(it.cause)}</p>
+          </div>` : ''}
+          <div class="troubleshoot-solution">
+            <div class="troubleshoot-sub-label">${t(lang, 'troubleshootingSolution')}</div>
+            ${renderProse(it.solution)}
+            ${it.code ? renderTutorialCode(it.code) : ''}
+          </div>
+        </article>`
+      }).join('')}
+    </section>`}
+
+    ${footerHTML(docs, lang)}`
+
+  return shell({
+    lang,
+    title: `${ts.title || sidebarLabel} — ${docs.overview.title}`,
+    sidebar: buildSidebar(docs, `gs:${slug}`, lang, '../../'),
+    tocItems,
+    body,
+  })
+}
+
+function renderProse(text: string): string {
+  if (!text) return ''
+  return text
+    .split(/\n\n+/)
+    .map((p) => `<p>${escapeHTML(p.trim()).replace(/\n/g, '<br>')}</p>`)
+    .join('')
+}
+
+function renderTutorialCode(code: { language: string; source: string; caption?: string }): string {
+  return `
+    <div class="tutorial-code-wrap">
+      ${code.caption ? `<div class="tutorial-code-caption">${escapeHTML(code.caption)}</div>` : ''}
+      <pre><code class="language-${escapeHTML(code.language || 'plaintext')}">${escapeHTML(code.source)}</code></pre>
+    </div>`
+}
+
+function renderTutorialNote(text: string, kind: 'tip' | 'warning' | 'info', lang: Lang): string {
+  const labelKey = kind === 'tip' ? 'tutorialNoteTip' : kind === 'warning' ? 'tutorialNoteWarning' : 'tutorialNoteInfo'
+  return `
+    <aside class="tutorial-note tutorial-note-${kind}">
+      <span class="tutorial-note-label">${t(lang, labelKey)}</span>
+      <p>${escapeHTML(text)}</p>
+    </aside>`
+}
+
+function sidebarGsLabel(slug: string, lang: Lang): string {
+  switch (slug) {
+    case 'quick-start':     return t(lang, 'sidebarQuickStart')
+    case 'installation':    return t(lang, 'sidebarInstallation')
+    case 'first-project':   return t(lang, 'sidebarFirstProject')
+    case 'troubleshooting': return t(lang, 'sidebarTroubleshooting')
+    default: return slug
+  }
+}
+
+function kindGlyph(kind: SymbolDoc['kind']): string {
+  switch (kind) {
+    case 'function': return 'ƒ'
+    case 'class':    return 'C'
+    case 'interface':return 'I'
+    case 'type':     return 'T'
+    case 'variable': return 'V'
+    case 'constant': return 'K'
+    case 'method':   return 'M'
+    default:         return '·'
+  }
+}
+
+function renderSymbolCard(
+  sym: SymbolDoc,
+  lang: Lang,
+  typeIndex?: TypeIndex,
+  current?: SymbolLocation
+): string {
   const kindClass = `symbol-kind-${sym.kind}`
   const anchorId = `sym-${slugify(sym.name)}`
+  const renderType = (s: string | undefined | null): string => {
+    if (s == null || s === '') return '—'
+    if (typeIndex && current) return linkifyType(s, typeIndex, current)
+    return escapeHTML(s)
+  }
 
   const paramsHTML = sym.params && sym.params.length > 0 ? `
     <div class="symbol-section-label">${t(lang, 'apiRefParameters')}</div>
@@ -316,7 +800,7 @@ function renderSymbolCard(sym: SymbolDoc, lang: Lang): string {
         ${sym.params.map((p) => `
         <tr>
           <td><code>${escapeHTML(p.name)}</code></td>
-          <td><code>${escapeHTML(p.type ?? '—')}</code></td>
+          <td><code>${renderType(p.type)}</code></td>
           <td><span class="${p.required ? 'param-req' : 'param-opt'}">${p.required ? '✓' : '—'}</span></td>
           <td>${escapeHTML(p.description)}</td>
           ${sym.params!.some((q) => q.default != null) ? `<td><code>${escapeHTML(p.default ?? '—')}</code></td>` : ''}
@@ -327,7 +811,7 @@ function renderSymbolCard(sym: SymbolDoc, lang: Lang): string {
   const returnsHTML = sym.returns ? `
     <div class="symbol-returns">
       <strong>${t(lang, 'apiRefReturns')}</strong>
-      ${escapeHTML(sym.returns)}
+      ${renderType(sym.returns)}
     </div>` : ''
 
   const exampleHTML = sym.example ? `
@@ -494,6 +978,8 @@ interface ShellOpts {
   sidebar: string
   body: string
   tocItems?: TocItem[]
+  tocHTML?: string
+  extraScripts?: string
 }
 
 export interface TocItem {
@@ -502,8 +988,12 @@ export interface TocItem {
   level: 2 | 3
 }
 
-function shell({ lang, title, sidebar, body, tocItems = [] }: ShellOpts): string {
-  const toc = tocItems.length > 0 ? `
+function shell({ lang, title, sidebar, body, tocItems = [], tocHTML, extraScripts = '' }: ShellOpts): string {
+  let toc = ''
+  if (tocHTML) {
+    toc = tocHTML
+  } else if (tocItems.length > 0) {
+    toc = `
   <aside class="toc">
     <div class="toc-label">${t(lang, 'onThisPage')}</div>
     <ul>
@@ -512,7 +1002,8 @@ function shell({ lang, title, sidebar, body, tocItems = [] }: ShellOpts): string
         : `<li class="toc-sub"><a href="#${item.id}" data-toc-id="${item.id}">${escapeHTML(item.label)}</a></li>`
       ).join('')}
     </ul>
-  </aside>` : ''
+  </aside>`
+  }
 
   return `<!DOCTYPE html>
 <html lang="${lang}">
@@ -533,9 +1024,28 @@ function shell({ lang, title, sidebar, body, tocItems = [] }: ShellOpts): string
   ${toc}
   ${getMermaidInit(lang)}
   ${getTocScrollSpy()}
+  ${getSidebarDropdown()}
+  ${extraScripts}
   ${getCodeBlockEnhancer(lang)}
 </body>
 </html>`
+}
+
+function getSidebarDropdown(): string {
+  return `<script>
+(function () {
+  document.querySelectorAll('.sidebar-api-toggle').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault()
+      const group = btn.closest('.sidebar-api-group')
+      if (!group) return
+      const willOpen = !group.classList.contains('open')
+      group.classList.toggle('open', willOpen)
+      btn.setAttribute('aria-expanded', String(willOpen))
+    })
+  })
+})()
+</script>`
 }
 
 function getCodeBlockEnhancer(lang: Lang): string {
@@ -627,8 +1137,42 @@ function getTocScrollSpy(): string {
 }
 
 function buildSidebar(docs: Documentation, active: string, lang: Lang, relRoot = '../'): string {
-  // active can be: 'overview' | 'integrations' | service-name | 'api:service-name'
-  const activeApiService = active.startsWith('api:') ? active.slice(4) : null
+  // active forms:
+  //   'overview' | 'integrations' | <service-name>
+  //   'api:<service-name>'                       (API ref landing)
+  //   'api:<service-name>:<section-slug>'        (one API section page)
+  //   'gs:<slug>'                                 (a Get Started tutorial page)
+  let activeApiService: string | null = null
+  let activeApiSection: string | null = null
+  let activeGs: string | null = null
+  if (active.startsWith('api:')) {
+    const rest = active.slice(4)
+    const sep = rest.indexOf(':')
+    if (sep === -1) {
+      activeApiService = rest
+    } else {
+      activeApiService = rest.slice(0, sep)
+      activeApiSection = rest.slice(sep + 1)
+    }
+  } else if (active.startsWith('gs:')) {
+    activeGs = active.slice(3)
+  }
+
+  // Get Started section (only render if the LLM provided gettingStarted data)
+  const gs = docs.gettingStarted
+  const gsLinks: Array<{ slug: string; label: string }> = []
+  if (gs?.quickStart)     gsLinks.push({ slug: 'quick-start',     label: t(lang, 'sidebarQuickStart') })
+  if (gs?.installation)   gsLinks.push({ slug: 'installation',    label: t(lang, 'sidebarInstallation') })
+  if (gs?.firstProject)   gsLinks.push({ slug: 'first-project',   label: t(lang, 'sidebarFirstProject') })
+  if (gs?.troubleshooting) gsLinks.push({ slug: 'troubleshooting', label: t(lang, 'sidebarTroubleshooting') })
+  const gsHTML = gsLinks.length === 0 ? '' : `
+    <div class="sidebar-section">
+      <div class="sidebar-label">${t(lang, 'sidebarGetStarted')}</div>
+      ${gsLinks.map((g) => {
+        const isActive = activeGs === g.slug
+        return `<a href="${relRoot}get-started/${g.slug}/" class="sidebar-link${isActive ? ' active' : ''}">${escapeHTML(g.label)}</a>`
+      }).join('')}
+    </div>`
 
   const serviceLinks = docs.services
     .map((s) => {
@@ -637,16 +1181,46 @@ function buildSidebar(docs: Documentation, active: string, lang: Lang, relRoot =
     })
     .join('')
 
-  const hasAnyApiRef = docs.services.some((s) => s.apiReference)
-  const apiRefLinks = hasAnyApiRef
-    ? docs.services
-        .filter((s) => s.apiReference)
-        .map((s) => {
-          const isActive = activeApiService === s.name
-          return `<a href="${relRoot}${slugify(s.name)}/api/" class="sidebar-sub-link ${isActive ? 'active' : ''}">${escapeHTML(s.name)}</a>`
-        })
-        .join('')
-    : ''
+  const apiRefServices = docs.services.filter((s) => s.apiReference)
+  const hasAnyApiRef = apiRefServices.length > 0
+
+  const apiRefGroups = apiRefServices.map((s) => {
+    const isActiveService = activeApiService === s.name
+    const slug = slugify(s.name)
+    const apiHref = `${relRoot}${slug}/api/`
+    const sections = s.apiReference?.sections ?? []
+    const expanded = isActiveService
+
+    const sectionItems = sections.map((section, idx) => {
+      const sectionSlug = slugify(section.title)
+      const href = `${apiHref}${sectionSlug}/`
+      const isActiveSec = isActiveService && activeApiSection === sectionSlug
+      const idx2 = String(idx + 1).padStart(2, '0')
+      return `<li><a href="${href}" class="sidebar-api-section-link${isActiveSec ? ' active' : ''}" data-section-id="${sectionSlug}">
+        <span class="sidebar-api-section-index">${idx2}</span>
+        <span class="sidebar-api-section-label">${escapeHTML(section.title)}</span>
+      </a></li>`
+    }).join('')
+
+    return `
+    <div class="sidebar-api-group${expanded ? ' open' : ''}${isActiveService ? ' is-active' : ''}" data-service-slug="${slug}">
+      <div class="sidebar-api-row${isActiveService ? ' active' : ''}">
+        <a href="${apiHref}" class="sidebar-sub-link${isActiveService ? ' active' : ''}">${escapeHTML(s.name)}</a>
+        ${sections.length > 0 ? `
+        <button type="button" class="sidebar-api-toggle" aria-expanded="${expanded ? 'true' : 'false'}" aria-label="${escapeHTML(s.name)}">
+          <svg class="chevron" viewBox="0 0 12 12" width="11" height="11" aria-hidden="true">
+            <path d="M3 4.75L6 7.5L9 4.75" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>` : ''}
+      </div>
+      ${sections.length > 0 ? `
+      <div class="sidebar-api-sections-wrap">
+        <div class="sidebar-api-sections-inner">
+          <ul class="sidebar-api-sections">${sectionItems}</ul>
+        </div>
+      </div>` : ''}
+    </div>`
+  }).join('')
 
   return `
   <nav class="sidebar">
@@ -654,6 +1228,7 @@ function buildSidebar(docs: Documentation, active: string, lang: Lang, relRoot =
       <div class="logo-mark">R</div>
       <span class="logo-text">repomap</span>
     </div>
+    ${gsHTML}
     <div class="sidebar-section">
       <div class="sidebar-label">${t(lang, 'sidebarOverview')}</div>
       <a href="${relRoot}" class="sidebar-link ${active === 'overview' ? 'active' : ''}">${t(lang, 'sidebarIntroduction')}</a>
@@ -666,7 +1241,7 @@ function buildSidebar(docs: Documentation, active: string, lang: Lang, relRoot =
     ${hasAnyApiRef ? `
     <div class="sidebar-section">
       <div class="sidebar-label">${t(lang, 'sidebarApiReference')}</div>
-      ${apiRefLinks}
+      ${apiRefGroups}
     </div>` : ''}
   </nav>`
 }

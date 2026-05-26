@@ -66,8 +66,54 @@ const DOC_JSON_SCHEMA = `{
     "summary": "how all services work together",
     "diagram": "mermaid sequence diagram of the main flow",
     "flows": [{"name": "Main User Flow", "description": "string", "steps": ["step1"], "diagram": "mermaid sequence diagram"}]
+  },
+  "gettingStarted": {
+    "quickStart": {
+      "title": "string — short tutorial title, e.g. 'Quick Start' / 'Inicio Rápido'",
+      "summary": "1-2 sentence intro: what the reader will accomplish in this tutorial",
+      "steps": [
+        {
+          "heading": "1. Step title",
+          "description": "1-2 paragraphs of prose. Plain text only (no markdown). Use \\n\\n for paragraph breaks.",
+          "code": {"language": "bash|typescript|yaml|json|...", "source": "code block content", "caption": "optional caption above the block"},
+          "note": "optional callout text (tip, warning, info)",
+          "noteKind": "tip|warning|info"
+        }
+      ]
+    },
+    "installation": {
+      "title": "Installation",
+      "summary": "1-2 sentences: prerequisites, time required, target audience",
+      "steps": ["same TutorialStep shape as quickStart — prerequisites, install commands, verification, common flags"]
+    },
+    "firstProject": {
+      "title": "Your first project — pick a contextual name (e.g. 'Tu primer pipeline', 'Build your first endpoint', 'Document your first repo')",
+      "summary": "1-2 sentences: end-to-end goal of this tutorial — what the reader builds",
+      "steps": ["same TutorialStep shape — a real walk-through from zero to a working end-to-end result, 4-7 steps"]
+    },
+    "troubleshooting": {
+      "title": "Troubleshooting",
+      "summary": "1-2 sentences: scope of issues covered, where to go for more help",
+      "items": [
+        {
+          "problem": "Error message or symptom — phrase as the reader sees it",
+          "cause": "1-2 sentences explaining why this happens (optional)",
+          "solution": "1-2 paragraphs of prose with the fix",
+          "code": {"language": "bash|...", "source": "optional fix command or snippet"}
+        }
+      ]
+    }
   }
-}`
+}
+
+GETTING STARTED GUIDANCE:
+- Produce ALL FOUR sections (quickStart, installation, firstProject, troubleshooting). Skip a section ONLY if there's truly no information available.
+- quickStart: minimum-viable path to first success. 3-5 steps. Assume zero prior context.
+- installation: prerequisites, install commands per OS if relevant, verification step, common errors inline.
+- firstProject: a real end-to-end walkthrough using the actual symbols/endpoints/commands of this codebase (not generic). 4-7 steps.
+- troubleshooting: 5-10 items minimum. Mine the README and code for actual error messages users hit ('command not found', 'auth failure', 'quota', etc.).
+- Tutorials are PEDAGOGICAL — explain the why, not just the what. Use second-person ("you", "tú"). Anticipate questions.
+- Code blocks MUST be syntactically valid and copy-pasteable.`
 
 export interface ClaudeCodeAdapterOptions {
   model?: string                // 'sonnet' | 'opus' | full id; default 'sonnet'

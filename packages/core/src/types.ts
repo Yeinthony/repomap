@@ -144,8 +144,51 @@ export interface Documentation {
   overview: OverviewDoc
   services: ServiceDoc[]
   integrations: IntegrationDoc
+  gettingStarted?: GettingStartedDoc
   changelog?: ChangelogEntry[]
   generatedAt: string
+}
+
+// ── Getting Started (tutorial-style onboarding pages) ────────────────────────
+
+export interface GettingStartedDoc {
+  quickStart?: TutorialDoc
+  installation?: TutorialDoc
+  firstProject?: TutorialDoc
+  troubleshooting?: TroubleshootingDoc
+}
+
+export interface TutorialDoc {
+  title: string
+  summary: string
+  steps: TutorialStep[]
+}
+
+export interface TutorialStep {
+  heading: string
+  description: string
+  code?: TutorialCode
+  note?: string
+  noteKind?: 'tip' | 'warning' | 'info'
+}
+
+export interface TutorialCode {
+  language: string
+  source: string
+  caption?: string
+}
+
+export interface TroubleshootingDoc {
+  title: string
+  summary: string
+  items: TroubleshootingItem[]
+}
+
+export interface TroubleshootingItem {
+  problem: string
+  cause?: string
+  solution: string
+  code?: TutorialCode
 }
 
 export interface OverviewDoc {
