@@ -1,0 +1,83 @@
+# Copy this file into your repo at .github/workflows/repomap.yml
+#
+# What it does: runs `repomap generate` on push to main (and on manual
+# dispatch), then handles the output with one of three strategies — pick
+# the one that fits your team.
+#
+# Prereqs in your repo:
+#   1. repomap.config.yml at the root (run `repomap init` locally first)
+#   2. Add ANTHROPIC_API_KEY in repo Settings → Secrets and variables → Actions
+
+name: Generate docs with repomap
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# `contents: write` lets the action commit the docs back (Option A).
+# `pull-requests: write` is only needed for Option B (PR-based).
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need a writable token + full history to push docs back
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run repomap
+        uses: Yeinthony/repomap@v1
+        with:
+          config-path: repomap.config.yml
+          output-path: ./repomap-docs
+          ai-provider: claude
+          model: sonnet
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # lang: en          # 'en' | 'es' — overrides config.language
+          # format: html      # 'html' | 'markdown' | 'json'
+
+      # ─── Option A — commit docs back to the same branch ────────────────────
+      # Simple, fast, but every doc change pollutes git history. Best for
+      # small/internal repos where docs and code travel together.
+      - name: Commit docs
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add repomap-docs
+          if git diff --cached --quiet; then
+            echo "No doc changes — nothing to commit"
+          else
+            git commit -m "docs: regenerate via repomap [skip ci]"
+            git push
+          fi
+
+      # ─── Option B — open a PR with the doc changes ─────────────────────────
+      # Lets a reviewer eyeball the doc diff before merging. Better for
+      # public-facing repos. Comment Option A above and uncomment this.
+      #
+      # - name: Create PR with docs
+      #   uses: peter-evans/create-pull-request@v6
+      #   with:
+      #     commit-message: "docs: regenerate via repomap"
+      #     title: "docs: regenerate via repomap (commit ${{ github.sha }})"
+      #     branch: repomap/docs-update
+      #     body: |
+      #       Automated regeneration from `repomap generate`.
+      #       Triggered by commit ${{ github.sha }}.
+      #     add-paths: repomap-docs
+
+      # ─── Option C — publish to GitHub Pages ────────────────────────────────
+      # Treats the docs as a separate hosted site at <user>.github.io/<repo>.
+      # Best for OSS / external API consumers. Use with output-path = ./site
+      # or whatever you prefer.
+      #
+      # - name: Deploy to GitHub Pages
+      #   uses: peaceiris/actions-gh-pages@v3
+      #   with:
+      #     github_token: ${{ secrets.GITHUB_TOKEN }}
+      #     publish_dir: ./repomap-docs

@@ -1,0 +1,100 @@
+name: 'repomap'
+description: 'AI-powered documentation generator for multi-repo projects'
+author: 'Yeinthony Vargas'
+
+branding:
+  icon: 'book-open'
+  color: 'orange'
+
+inputs:
+  config-path:
+    description: 'Path to repomap.config.yml (relative to repo root)'
+    required: false
+    default: 'repomap.config.yml'
+  output-path:
+    description: 'Directory where docs will be written'
+    required: false
+    default: './repomap-docs'
+  ai-provider:
+    description: 'AI provider: claude | claude-code. In CI prefer "claude" since claude-code CLI is not normally available.'
+    required: false
+    default: 'claude'
+  model:
+    description: 'Model alias (sonnet | opus) or full model id'
+    required: false
+    default: ''
+  lang:
+    description: 'Documentation language: en | es'
+    required: false
+    default: ''
+  format:
+    description: 'Output format: html | markdown | json'
+    required: false
+    default: ''
+  anthropic-api-key:
+    description: 'ANTHROPIC_API_KEY — required when ai-provider=claude'
+    required: false
+    default: ''
+  repomap-version:
+    description: 'Version spec for @repomap/cli (npm dist-tag, semver range, or "github:<owner>/<repo>"). Default: latest published.'
+    required: false
+    default: 'latest'
+  node-version:
+    description: 'Node.js version to use'
+    required: false
+    default: '20'
+  python-version:
+    description: 'Python version to use (for graphify)'
+    required: false
+    default: '3.11'
+
+outputs:
+  output-path:
+    description: 'Absolute path to the generated docs directory'
+    value: ${{ steps.generate.outputs.output-path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Setup Python (for graphify)
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install graphify
+      shell: bash
+      run: |
+        python -m pip install --user pipx
+        python -m pipx ensurepath
+        pipx install graphifyy
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Install repomap CLI
+      shell: bash
+      run: npm install -g "@repomap/cli@${{ inputs.repomap-version }}"
+
+    - name: Verify setup (repomap doctor)
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+      run: repomap doctor -c "${{ inputs.config-path }}" || echo "Doctor reported warnings — continuing"
+
+    - name: Generate docs
+      id: generate
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+      run: |
+        set -euo pipefail
+        ARGS=( -c "${{ inputs.config-path }}" -o "${{ inputs.output-path }}" --ai "${{ inputs.ai-provider }}" )
+        [ -n "${{ inputs.model }}" ] && ARGS+=( --model "${{ inputs.model }}" )
+        [ -n "${{ inputs.lang }}" ] && ARGS+=( --lang "${{ inputs.lang }}" )
+        repomap generate "${ARGS[@]}"
+        ABS_OUT="$(cd "${{ inputs.output-path }}" && pwd)"
+        echo "output-path=$ABS_OUT" >> "$GITHUB_OUTPUT"
+        echo "Generated docs at: $ABS_OUT"

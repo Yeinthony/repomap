@@ -342,6 +342,25 @@ find <repo>/src -name '*.d.ts' -o -name '*.js' -o -name '*.js.map' | xargs rm
 
 ---
 
+## GitHub Action
+
+Para correr repomap en CI y mantener la doc al día sin trabajo manual:
+
+```yaml
+- uses: Yeinthony/repomap@v1
+  with:
+    config-path: repomap.config.yml
+    output-path: ./repomap-docs
+    ai-provider: claude
+    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+La action instala Node, Python, graphify y `@repomap/cli`, corre `repomap doctor` como verificación, y luego `repomap generate` con los flags que pases.
+
+Ejemplo completo en [`examples/github-actions/repomap.yml`](./examples/github-actions/repomap.yml) — incluye tres opciones para qué hacer con el output: commit-back al mismo branch, abrir PR para review, o publicar en GitHub Pages.
+
+---
+
 ## Stack del propio repomap
 
 - **TypeScript** (ESM, NodeNext)
@@ -358,11 +377,13 @@ find <repo>/src -name '*.d.ts' -o -name '*.js' -o -name '*.js.map' | xargs rm
 - [x] Adaptador para Claude Code (sin API key)
 - [x] Adaptador para Claude API
 - [x] HTML output con Mermaid pan/zoom, TOC, syntax highlighting, file tree
+- [x] Markdown output (Notion/Obsidian/GitBook/MkDocs compatible)
 - [x] Comando `render` para iterar diseño sin gastar tokens
+- [x] `repomap doctor`, `clean`, `status`, `hooks install`
+- [x] Live-reload en `serve`
+- [x] GitHub Action
 - [ ] Adaptador para Gemini (usa la integración nativa de graphify)
 - [ ] Adaptador para Ollama (local, privado)
-- [ ] Instalador de git hooks (`repomap hooks install`)
-- [ ] GitHub Action
 - [ ] Sistema de temas
 - [ ] Chat embebido "Pregúntale a los docs"
 
