@@ -55,6 +55,7 @@ const cliDict = {
     serveRunGeneratePrefix: 'Run',
     serveLiveReloadOn: 'live-reload on (--no-reload to disable)',
     serveLiveReloadOff: 'live-reload off',
+    serveAllInterfaces: '⚠ bound to 0.0.0.0 — anyone on this network can reach the docs',
     initExists: 'repomap.config.yml already exists',
     initCreated: '✓ Created repomap.config.yml',
     initEditPrompt: '  Edit it to point to your repos, then run:',
@@ -129,6 +130,7 @@ const cliDict = {
     serveRunGeneratePrefix: 'Ejecuta',
     serveLiveReloadOn: 'live-reload activo (--no-reload para desactivar)',
     serveLiveReloadOff: 'live-reload desactivado',
+    serveAllInterfaces: '⚠ escuchando en 0.0.0.0 — cualquiera en esta red puede acceder',
     initExists: 'repomap.config.yml ya existe',
     initCreated: '✓ Creado repomap.config.yml',
     initEditPrompt: '  Edítalo apuntando a tus repos y luego corre:',
@@ -390,6 +392,7 @@ program
   .command('serve')
   .description('Open the generated docs in your browser (with live-reload)')
   .option('-p, --port <port>', 'Port number', '4040')
+  .option('--host <host>', 'Host/interface to bind (use 0.0.0.0 to expose to LAN)', 'localhost')
   .option('-d, --dir <path>', 'Docs directory', './repomap-docs')
   .option('--lang <language>', 'Override language: en | es')
   .option('--no-open', "Don't open the browser automatically")
@@ -524,13 +527,20 @@ program
     }
 
     const port = Number(options.port)
-    server.listen(port, () => {
-      const url = `http://localhost:${port}`
+    const host = String(options.host ?? 'localhost')
+    const isAllInterfaces = host === '0.0.0.0' || host === '::'
+    // URL the user will click — always loopback-friendly. Browsers can't open 0.0.0.0.
+    const browserUrl = `http://${isAllInterfaces || host === 'localhost' ? 'localhost' : host}:${port}`
+
+    server.listen(port, host, () => {
       console.log('')
-      console.log(chalk.green('  ' + tCli(lang, 'serveRunning')(chalk.cyan(url))))
+      console.log(chalk.green('  ' + tCli(lang, 'serveRunning')(chalk.cyan(browserUrl))))
       console.log(chalk.dim('  ' + (reloadEnabled ? tCli(lang, 'serveLiveReloadOn') : tCli(lang, 'serveLiveReloadOff'))))
+      if (isAllInterfaces) {
+        console.log(chalk.yellow('  ' + tCli(lang, 'serveAllInterfaces')))
+      }
       console.log('')
-      if (options.open !== false) open(url)
+      if (options.open !== false) open(browserUrl)
     })
 
     const shutdown = () => {
