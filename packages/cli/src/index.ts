@@ -74,6 +74,29 @@ const cliDict = {
     cleanDone: '✓ Cleaned.',
     cleanUnsafe: (p: string) => `Refusing to clean ${p} — looks unsafe (root, home dir, or cwd).`,
     cleanAllHint: 'Tip: pass --all to also remove the HTML pages.',
+    statusHeader: 'Status — workspace summary',
+    statusConfigLabel: 'Config',
+    statusOutputLabel: 'Output',
+    statusReposLabel: (n: number) => `Repos (${n})`,
+    statusRepoNotFound: 'path not found',
+    statusConfigMissing: 'no repomap.config.yml found (using default ./repomap-docs)',
+    statusLastGen: 'Last generated',
+    statusKnowledgeSize: (size: string) => `knowledge.json: ${size}`,
+    statusNeverGenerated: 'Never generated — no cache yet',
+    statusRunGenerate: 'Run `repomap generate` to create the cache',
+    statusOutputBreakdown: 'Output dir',
+    statusHtmlPages: 'HTML pages',
+    statusGraphifyOutputs: (n: number) => `graphify outputs: ${n} repos`,
+    statusDebugDumps: (n: number, size: string) => `debug dumps: ${n} dirs (${size})`,
+    statusDebugHint: '→ repomap clean to remove',
+    statusTotalSize: 'total size',
+    statusNoOutput: 'no output dir yet',
+    statusNextLabel: 'Next',
+    ageJustNow: 'just now',
+    ageMinutes: (m: number) => `${m}m ago`,
+    ageHours: (h: number) => `${h}h ago`,
+    ageDays: (d: number) => `${d}d ago`,
+    ageMonths: (mo: number) => `~${mo}mo ago`,
     doctorHeader: 'Doctor — checking your setup',
     doctorAllGood: 'All checks passed. You can run `repomap generate`.',
     doctorHasIssues: 'Some checks failed. Fix the items above and run `repomap doctor` again.',
@@ -149,6 +172,29 @@ const cliDict = {
     cleanDone: '✓ Limpio.',
     cleanUnsafe: (p: string) => `No se borrará ${p} — parece riesgoso (root, home o cwd).`,
     cleanAllHint: 'Tip: pasa --all para también borrar las páginas HTML.',
+    statusHeader: 'Estado — resumen del workspace',
+    statusConfigLabel: 'Config',
+    statusOutputLabel: 'Salida',
+    statusReposLabel: (n: number) => `Repos (${n})`,
+    statusRepoNotFound: 'path no existe',
+    statusConfigMissing: 'no se encontró repomap.config.yml (usando default ./repomap-docs)',
+    statusLastGen: 'Última generación',
+    statusKnowledgeSize: (size: string) => `knowledge.json: ${size}`,
+    statusNeverGenerated: 'Nunca generado — todavía no hay cache',
+    statusRunGenerate: 'Corre `repomap generate` para crear el cache',
+    statusOutputBreakdown: 'Carpeta de salida',
+    statusHtmlPages: 'Páginas HTML',
+    statusGraphifyOutputs: (n: number) => `outputs de graphify: ${n} repos`,
+    statusDebugDumps: (n: number, size: string) => `volcados de debug: ${n} dirs (${size})`,
+    statusDebugHint: '→ repomap clean para borrar',
+    statusTotalSize: 'tamaño total',
+    statusNoOutput: 'aún no hay carpeta de salida',
+    statusNextLabel: 'Próximo',
+    ageJustNow: 'hace segundos',
+    ageMinutes: (m: number) => `hace ${m} min`,
+    ageHours: (h: number) => `hace ${h}h`,
+    ageDays: (d: number) => `hace ${d} ${d === 1 ? 'día' : 'días'}`,
+    ageMonths: (mo: number) => `hace ~${mo} ${mo === 1 ? 'mes' : 'meses'}`,
     doctorHeader: 'Doctor — revisando tu setup',
     doctorAllGood: 'Todo en orden. Puedes correr `repomap generate`.',
     doctorHasIssues: 'Hay chequeos que fallaron. Corrige lo de arriba y vuelve a correr `repomap doctor`.',
@@ -760,6 +806,99 @@ program
     if (!options.all) console.log(chalk.dim('  ' + tCli(lang, 'cleanAllHint')))
   })
 
+// ── status command ────────────────────────────────────────────────────────────
+
+program
+  .command('status')
+  .description('Show workspace summary: config, repos, last generate, cache size, debug dumps')
+  .option('-c, --config <path>', 'Path to config file', 'repomap.config.yml')
+  .option('--lang <language>', 'Override language: en | es')
+  .action((options) => {
+    const lang = resolveLang(options)
+    printBanner()
+    console.log(chalk.bold('  ' + tCli(lang, 'statusHeader')))
+    console.log('')
+
+    // Resolve config leniently — don't exit when missing.
+    const configPath = path.resolve(options.config ?? 'repomap.config.yml')
+    const hasConfig = fs.existsSync(configPath)
+    let config: RepomapConfig | null = null
+    if (hasConfig) {
+      try { config = yaml.parse(fs.readFileSync(configPath, 'utf-8')) as RepomapConfig } catch { /* ignore */ }
+    }
+    const outDir = path.resolve(config?.output?.path ?? './repomap-docs')
+
+    const PAD = 12
+    const configDisplay = hasConfig
+      ? (path.relative(process.cwd(), configPath) || configPath)
+      : chalk.yellow(tCli(lang, 'statusConfigMissing'))
+    console.log('  ' + chalk.dim(tCli(lang, 'statusConfigLabel').padEnd(PAD)) + configDisplay)
+    console.log('  ' + chalk.dim(tCli(lang, 'statusOutputLabel').padEnd(PAD)) + outDir)
+
+    // Repos
+    if (config?.repos?.length) {
+      console.log('')
+      console.log('  ' + chalk.bold(tCli(lang, 'statusReposLabel')(config.repos.length)))
+      const nameWidth = Math.min(20, Math.max(...config.repos.map((r) => r.name.length)) + 2)
+      for (const r of config.repos) {
+        const exists = fs.existsSync(path.resolve(r.path))
+        const mark = exists ? chalk.green('✓') : chalk.red('✗')
+        const suffix = exists ? '' : chalk.red(` (${tCli(lang, 'statusRepoNotFound')})`)
+        console.log(`    ${mark} ${r.name.padEnd(nameWidth)} ${chalk.dim(r.path)}${suffix}`)
+      }
+    }
+
+    // Last generate
+    const knowledgePath = path.join(outDir, 'data', 'knowledge.json')
+    console.log('')
+    console.log('  ' + chalk.bold(tCli(lang, 'statusLastGen')))
+    if (fs.existsSync(knowledgePath)) {
+      let generatedAt: string | null = null
+      try {
+        const k = JSON.parse(fs.readFileSync(knowledgePath, 'utf-8'))
+        generatedAt = k?.docs?.generatedAt ?? null
+      } catch { /* ignore */ }
+      const stat = fs.statSync(knowledgePath)
+      const when = generatedAt ?? stat.mtime.toISOString()
+      const ageMs = Date.now() - new Date(when).getTime()
+      console.log(`    ${formatDate(when, lang)}  ${chalk.dim('(' + humanAge(ageMs, lang) + ')')}`)
+      console.log(`    ${chalk.dim(tCli(lang, 'statusKnowledgeSize')(humanBytes(stat.size)))}`)
+    } else {
+      console.log(`    ${chalk.yellow(tCli(lang, 'statusNeverGenerated'))}`)
+      console.log(`    ${chalk.dim(tCli(lang, 'statusRunGenerate'))}`)
+    }
+
+    // Output dir breakdown
+    console.log('')
+    console.log('  ' + chalk.bold(tCli(lang, 'statusOutputBreakdown')))
+    if (!fs.existsSync(outDir)) {
+      console.log(`    ${chalk.dim(tCli(lang, 'statusNoOutput'))}`)
+    } else {
+      const htmlCount = countHtmlPages(outDir)
+      const graphifyDir = path.join(outDir, 'graphify')
+      const graphifyRepos = fs.existsSync(graphifyDir)
+        ? fs.readdirSync(graphifyDir, { withFileTypes: true }).filter((d) => d.isDirectory()).length
+        : 0
+      const debugDirPath = path.join(outDir, '.repomap-debug')
+      let debugRuns = 0
+      let debugBytes = 0
+      if (fs.existsSync(debugDirPath)) {
+        const entries = fs.readdirSync(debugDirPath, { withFileTypes: true }).filter((d) => d.isDirectory())
+        debugRuns = entries.length
+        for (const e of entries) debugBytes += walkSize(path.join(debugDirPath, e.name)).bytes
+      }
+      const totalBytes = walkSize(outDir).bytes
+
+      console.log(`    ${tCli(lang, 'statusHtmlPages')}: ${chalk.cyan(String(htmlCount))}`)
+      console.log(`    ${tCli(lang, 'statusGraphifyOutputs')(graphifyRepos)}`)
+      if (debugRuns > 0) {
+        console.log(`    ${tCli(lang, 'statusDebugDumps')(debugRuns, humanBytes(debugBytes))}  ${chalk.dim(tCli(lang, 'statusDebugHint'))}`)
+      }
+      console.log(`    ${tCli(lang, 'statusTotalSize')}: ${chalk.cyan(humanBytes(totalBytes))}`)
+    }
+    console.log('')
+  })
+
 // ── init command ──────────────────────────────────────────────────────────────
 
 program
@@ -960,6 +1099,49 @@ function walkSize(dir: string): { bytes: number; files: number } {
     }
   }
   return { bytes, files }
+}
+
+// Walk output dir counting .html files, skipping cache/data/debug subtrees so
+// the number reflects user-facing pages, not generated artifacts.
+function countHtmlPages(dir: string): number {
+  const SKIP = new Set(['data', 'graphify', '.repomap-debug', 'node_modules', '.git'])
+  let count = 0
+  const walk = (d: string) => {
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(d, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        if (SKIP.has(e.name)) continue
+        walk(path.join(d, e.name))
+      } else if (e.isFile() && e.name.endsWith('.html')) {
+        count++
+      }
+    }
+  }
+  walk(dir)
+  return count
+}
+
+function formatDate(iso: string, lang: CliLang): string {
+  try {
+    return new Date(iso).toLocaleString(lang === 'es' ? 'es-ES' : 'en-US', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    })
+  } catch { return iso }
+}
+
+function humanAge(ms: number, lang: CliLang): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return tCli(lang, 'ageJustNow')
+  const m = Math.floor(s / 60)
+  if (m < 60) return tCli(lang, 'ageMinutes')(m)
+  const h = Math.floor(m / 60)
+  if (h < 24) return tCli(lang, 'ageHours')(h)
+  const d = Math.floor(h / 24)
+  if (d < 30) return tCli(lang, 'ageDays')(d)
+  const mo = Math.floor(d / 30)
+  return tCli(lang, 'ageMonths')(mo)
 }
 
 function humanBytes(n: number): string {
