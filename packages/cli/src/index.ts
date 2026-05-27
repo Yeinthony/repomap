@@ -3,6 +3,7 @@ import { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
@@ -64,6 +65,14 @@ const cliDict = {
     verboseConfigSource: (p: string) => `config: ${p}`,
     verboseOutputDir: (p: string) => `output: ${p}`,
     verboseRepoList: (n: number, names: string) => `repos (${n}): ${names}`,
+    cleanHeader: (p: string) => `Cleaning under ${p}`,
+    cleanNothingDir: (p: string) => `Nothing to clean — ${p} doesn't exist.`,
+    cleanNothing: 'Nothing to clean — caches are already empty.',
+    cleanTotal: (files: number, size: string) => `Total: ${files} files, ${size}`,
+    cleanDryRun: 'Dry-run: no files were deleted. Re-run without --dry-run to delete.',
+    cleanDone: '✓ Cleaned.',
+    cleanUnsafe: (p: string) => `Refusing to clean ${p} — looks unsafe (root, home dir, or cwd).`,
+    cleanAllHint: 'Tip: pass --all to also remove the HTML pages.',
     doctorHeader: 'Doctor — checking your setup',
     doctorAllGood: 'All checks passed. You can run `repomap generate`.',
     doctorHasIssues: 'Some checks failed. Fix the items above and run `repomap doctor` again.',
@@ -130,6 +139,14 @@ const cliDict = {
     verboseConfigSource: (p: string) => `config: ${p}`,
     verboseOutputDir: (p: string) => `output: ${p}`,
     verboseRepoList: (n: number, names: string) => `repos (${n}): ${names}`,
+    cleanHeader: (p: string) => `Limpiando bajo ${p}`,
+    cleanNothingDir: (p: string) => `Nada que limpiar — ${p} no existe.`,
+    cleanNothing: 'Nada que limpiar — los caches ya están vacíos.',
+    cleanTotal: (files: number, size: string) => `Total: ${files} archivos, ${size}`,
+    cleanDryRun: 'Dry-run: no se borró nada. Re-ejecuta sin --dry-run para borrar.',
+    cleanDone: '✓ Limpio.',
+    cleanUnsafe: (p: string) => `No se borrará ${p} — parece riesgoso (root, home o cwd).`,
+    cleanAllHint: 'Tip: pasa --all para también borrar las páginas HTML.',
     doctorHeader: 'Doctor — revisando tu setup',
     doctorAllGood: 'Todo en orden. Puedes correr `repomap generate`.',
     doctorHasIssues: 'Hay chequeos que fallaron. Corrige lo de arriba y vuelve a correr `repomap doctor`.',
@@ -650,6 +667,89 @@ program
     }
   })
 
+// ── clean command ─────────────────────────────────────────────────────────────
+
+program
+  .command('clean')
+  .description('Remove generated caches under output.path (data/, graphify/, .repomap-debug/)')
+  .option('-c, --config <path>', 'Path to config file', 'repomap.config.yml')
+  .option('-o, --output <path>', 'Output directory to clean (overrides config.output.path)')
+  .option('--all', 'Also remove HTML pages — wipes the entire output directory')
+  .option('-n, --dry-run', 'List what would be deleted, do not delete')
+  .option('--lang <language>', 'Override language: en | es')
+  .action((options) => {
+    const lang = resolveLang(options)
+    printBanner()
+
+    // Resolve output dir without requiring a full config (clean should be lenient).
+    let outDir: string
+    if (options.output) {
+      outDir = path.resolve(options.output)
+    } else {
+      const configPath = path.resolve(options.config ?? 'repomap.config.yml')
+      if (fs.existsSync(configPath)) {
+        try {
+          const cfg = yaml.parse(fs.readFileSync(configPath, 'utf-8'))
+          outDir = path.resolve(cfg?.output?.path ?? './repomap-docs')
+        } catch {
+          outDir = path.resolve('./repomap-docs')
+        }
+      } else {
+        outDir = path.resolve('./repomap-docs')
+      }
+    }
+
+    if (!isSafeToClean(outDir)) {
+      console.error(chalk.red('  ' + tCli(lang, 'cleanUnsafe')(outDir)))
+      process.exit(1)
+    }
+
+    if (!fs.existsSync(outDir)) {
+      console.log(chalk.dim('  ' + tCli(lang, 'cleanNothingDir')(outDir)))
+      return
+    }
+
+    console.log(chalk.bold('  ' + tCli(lang, 'cleanHeader')(outDir)))
+    console.log('')
+
+    const cacheTargets = [
+      path.join(outDir, 'data'),
+      path.join(outDir, 'graphify'),
+      path.join(outDir, '.repomap-debug'),
+    ].filter((p) => fs.existsSync(p))
+
+    const targets = options.all ? [outDir] : cacheTargets
+
+    if (targets.length === 0) {
+      console.log(chalk.dim('  ' + tCli(lang, 'cleanNothing')))
+      return
+    }
+
+    let totalBytes = 0
+    let totalFiles = 0
+    for (const t of targets) {
+      const s = walkSize(t)
+      totalBytes += s.bytes
+      totalFiles += s.files
+      console.log('  ' + chalk.cyan(t) + chalk.dim(`  (${s.files} files, ${humanBytes(s.bytes)})`))
+    }
+    console.log('')
+    console.log(chalk.dim('  ' + tCli(lang, 'cleanTotal')(totalFiles, humanBytes(totalBytes))))
+    console.log('')
+
+    if (options.dryRun) {
+      console.log(chalk.yellow('  ' + tCli(lang, 'cleanDryRun')))
+      if (!options.all) console.log(chalk.dim('  ' + tCli(lang, 'cleanAllHint')))
+      return
+    }
+
+    for (const t of targets) {
+      fs.rmSync(t, { recursive: true, force: true })
+    }
+    console.log(chalk.green('  ' + tCli(lang, 'cleanDone')))
+    if (!options.all) console.log(chalk.dim('  ' + tCli(lang, 'cleanAllHint')))
+  })
+
 // ── init command ──────────────────────────────────────────────────────────────
 
 program
@@ -814,6 +914,49 @@ function printBanner(): void {
   console.log(chalk.bold.hex('#e8a04a')('  repomap') + chalk.dim(` v${PKG_VERSION}`))
   console.log(chalk.dim('  AI-powered docs for multi-repo projects'))
   console.log('')
+}
+
+function isSafeToClean(p: string): boolean {
+  const resolved = path.resolve(p)
+  if (resolved === '/' || resolved === path.parse(resolved).root) return false
+  if (resolved === os.homedir()) return false
+  if (resolved === process.cwd()) return false
+  // Refuse to wipe a one-segment dir like /Users or /home
+  const segments = resolved.split(path.sep).filter(Boolean)
+  if (segments.length < 2) return false
+  return true
+}
+
+function walkSize(dir: string): { bytes: number; files: number } {
+  try {
+    const stat = fs.statSync(dir)
+    if (stat.isFile()) return { bytes: stat.size, files: 1 }
+  } catch { return { bytes: 0, files: 0 } }
+  let bytes = 0
+  let files = 0
+  let entries: fs.Dirent[]
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return { bytes: 0, files: 0 } }
+  for (const entry of entries) {
+    const p = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      const sub = walkSize(p)
+      bytes += sub.bytes
+      files += sub.files
+    } else if (entry.isFile()) {
+      try {
+        bytes += fs.statSync(p).size
+        files += 1
+      } catch { /* skip */ }
+    }
+  }
+  return { bytes, files }
+}
+
+function humanBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
 async function isBinaryAvailable(bin: string, args: string[]): Promise<boolean> {
