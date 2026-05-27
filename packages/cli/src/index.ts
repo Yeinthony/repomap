@@ -427,14 +427,25 @@ program
   .description('Watch for changes and auto-update docs')
   .option('-c, --config <path>', 'Path to config file', 'repomap.config.yml')
   .option('--lang <language>', 'Override language: en | es')
+  .option('--ignore <pattern...>', 'Extra ignore patterns (chokidar globs). Appended to defaults: node_modules, .git, dist, build, graphify-out')
+  .option('--debounce <ms>', 'Wait this many ms after last change before regenerating (default 1500)')
   .action(async (options) => {
     const lang = resolveLang(options)
     printBanner()
     const config = loadConfig(options)
     const adapter = await loadAdapter(config)
 
+    const debounceMs = options.debounce ? Number(options.debounce) : undefined
+    if (debounceMs != null && (!Number.isFinite(debounceMs) || debounceMs < 0)) {
+      console.error(chalk.red(`Invalid --debounce value: ${options.debounce} (must be a non-negative number of ms)`))
+      process.exit(1)
+    }
+    const extraIgnore: string[] | undefined = Array.isArray(options.ignore) && options.ignore.length > 0 ? options.ignore : undefined
+
     console.log(chalk.cyan(tCli(lang, 'watchStart')))
     console.log(chalk.dim('  ' + tCli(lang, 'watchPaths')) + config.repos.map((r) => r.path).join(', '))
+    if (extraIgnore) console.log(chalk.dim('  ignore: ') + chalk.cyan(extraIgnore.join(', ')))
+    if (debounceMs != null) console.log(chalk.dim('  debounce: ') + chalk.cyan(`${debounceMs}ms`))
     console.log('')
 
     let spinner = ora({ text: tCli(lang, 'starting'), spinner: 'dots' }).start()
@@ -475,7 +486,7 @@ program
       process.exit(0)
     })
 
-    await orchestrator.watch()
+    await orchestrator.watch({ ignore: extraIgnore, debounceMs })
   })
 
 // ── serve command ─────────────────────────────────────────────────────────────

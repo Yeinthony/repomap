@@ -109,11 +109,27 @@ export class Orchestrator {
     this.listener({ kind: 'done', outputPath: path.resolve(this.config.output.path) })
   }
 
-  async watch(): Promise<void> {
+  /**
+   * Watch repos for changes and update docs incrementally.
+   *
+   * @param opts.ignore  Extra ignore patterns (chokidar globs or regexes),
+   *                     appended to the built-in default (node_modules, .git,
+   *                     dist, build, graphify-out).
+   * @param opts.debounceMs  How long to wait after the last change before
+   *                         running incrementalUpdate. Default 1500ms.
+   *                         Lower for faster repos, higher for monorepos with
+   *                         heavy save bursts (formatter-on-save, codegen).
+   */
+  async watch(opts?: { ignore?: string[]; debounceMs?: number }): Promise<void> {
     await this.generate()
     const repoPaths = this.config.repos.map((r) => path.resolve(r.path))
+    const debounceMs = opts?.debounceMs ?? 1500
+    const defaultIgnore = /(node_modules|\.git|dist|build|graphify-out)/
+    const ignored = opts?.ignore && opts.ignore.length > 0
+      ? [defaultIgnore, ...opts.ignore]
+      : defaultIgnore
     const watcher = chokidar.watch(repoPaths, {
-      ignored: /(node_modules|\.git|dist|build|graphify-out)/,
+      ignored,
       persistent: true,
       ignoreInitial: true,
     })
@@ -131,7 +147,7 @@ export class Orchestrator {
         const rel = repoRoot ? path.relative(path.resolve(repoRoot), cp) : path.basename(cp)
         this.listener({ kind: 'watch-change', repo: repoName, path: rel || path.basename(cp) })
         await this.incrementalUpdate(repoName, cp)
-      }, 1500)
+      }, debounceMs)
     })
   }
 
