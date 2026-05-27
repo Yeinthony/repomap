@@ -39,19 +39,23 @@ Necesitas tres cosas en tu máquina antes de empezar:
 
 ## Instalación
 
-Mientras no haya paquete npm publicado, instalas desde fuente:
+```bash
+npm install -g @repomap/cli
+```
+
+Verifica con `repomap --version` (debería responder `0.1.0` o superior).
+
+> Si usas nvm y `repomap` no aparece en otra terminal, asegúrate de tener `nvm use <versión>` en tu `~/.zshrc`.
+
+### Desde fuente (para hackear el código)
 
 ```bash
-git clone <este-repo> repomap
+git clone https://github.com/Yeinthony/repomap.git
 cd repomap
 npm install
 npm run build
-npm link            # registra el comando `repomap` globalmente
+npm link            # registra `repomap` globalmente apuntando al checkout
 ```
-
-Verifica con `repomap --version`.
-
-> Si usas nvm y `repomap` no aparece en otra terminal, asegúrate de tener `nvm use <versión>` en tu `~/.zshrc` o usa el path completo a `node packages/cli/dist/index.js`.
 
 ---
 

@@ -11,7 +11,9 @@
   "scripts": {
     "build": "npm run build -w @repomap/core && npm run build -w @repomap/adapter-claude && npm run build -w @repomap/adapter-claude-code && npm run build -w @repomap/cli",
     "dev": "npm run dev -w packages/cli",
-    "test": "jest"
+    "test": "jest",
+    "pack:dry": "npm run build && npm pack -w @repomap/core --dry-run && npm pack -w @repomap/adapter-claude --dry-run && npm pack -w @repomap/adapter-claude-code --dry-run && npm pack -w @repomap/cli --dry-run",
+    "publish:all": "npm run build && npm publish -w @repomap/core && npm publish -w @repomap/adapter-claude && npm publish -w @repomap/adapter-claude-code && npm publish -w @repomap/cli"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

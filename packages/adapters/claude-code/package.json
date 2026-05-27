@@ -1,15 +1,52 @@
 {
   "name": "@repomap/adapter-claude-code",
   "version": "0.1.0",
+  "description": "Claude Code CLI adapter for repomap. Uses the user's local `claude` binary (Pro/Max subscription) — no API key required. Default adapter for local development.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "repomap",
+    "claude-code",
+    "anthropic",
+    "documentation",
+    "ai"
+  ],
+  "author": "Yeinthony Vargas <yeinthonyavargas@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/Yeinthony/repomap#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yeinthony/repomap.git",
+    "directory": "packages/adapters/claude-code"
+  },
+  "bugs": {
+    "url": "https://github.com/Yeinthony/repomap/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@repomap/core": "*"
+    "@repomap/core": "^0.1.0"
   },
   "devDependencies": {
     "typescript": "^5.4.0",

@@ -1,19 +1,54 @@
 {
   "name": "@repomap/cli",
   "version": "0.1.0",
+  "description": "AI-powered documentation generator for multi-repo projects. Analyzes your repos with graphify (AST), detects HTTP/event connections, and asks Claude to write Stripe-quality docs — overview, per-service pages, integrations, getting started.",
   "type": "module",
-  "description": "CLI for repomap - AI-powered documentation generator",
   "bin": {
     "repomap": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "documentation",
+    "docs-generator",
+    "ai",
+    "claude",
+    "anthropic",
+    "multi-repo",
+    "monorepo",
+    "graphify",
+    "developer-tools",
+    "cli"
+  ],
+  "author": "Yeinthony Vargas <yeinthonyavargas@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/Yeinthony/repomap#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yeinthony/repomap.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/Yeinthony/repomap/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@repomap/core": "*",
-    "@repomap/adapter-claude": "*",
-    "@repomap/adapter-claude-code": "*",
+    "@repomap/core": "^0.1.0",
+    "@repomap/adapter-claude": "^0.1.0",
+    "@repomap/adapter-claude-code": "^0.1.0",
     "commander": "^12.0.0",
     "chalk": "^5.3.0",
     "ora": "^8.0.0",

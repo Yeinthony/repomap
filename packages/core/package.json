@@ -1,12 +1,50 @@
 {
   "name": "@repomap/core",
   "version": "0.1.0",
+  "description": "Core engine for repomap — orchestrator, graphify pipeline, detectors, HTML render. Not usually installed directly; depend on @repomap/cli.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "documentation",
+    "ai",
+    "claude",
+    "multi-repo",
+    "graphify",
+    "monorepo"
+  ],
+  "author": "Yeinthony Vargas <yeinthonyavargas@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/Yeinthony/repomap#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yeinthony/repomap.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/Yeinthony/repomap/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc && mkdir -p dist/graphify dist/render && cp src/graphify/pipeline.py dist/graphify/pipeline.py && cp -R src/render/docs-skill dist/render/docs-skill",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "fast-glob": "^3.3.0",

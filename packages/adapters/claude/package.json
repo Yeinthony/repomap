@@ -1,15 +1,52 @@
 {
   "name": "@repomap/adapter-claude",
   "version": "0.1.0",
+  "description": "Claude API (Anthropic SDK) adapter for repomap. Uses ANTHROPIC_API_KEY — alternative to @repomap/adapter-claude-code when there's no Claude Code CLI (e.g. CI/CD).",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "repomap",
+    "anthropic",
+    "claude",
+    "documentation",
+    "ai"
+  ],
+  "author": "Yeinthony Vargas <yeinthonyavargas@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/Yeinthony/repomap#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yeinthony/repomap.git",
+    "directory": "packages/adapters/claude"
+  },
+  "bugs": {
+    "url": "https://github.com/Yeinthony/repomap/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@repomap/core": "*",
+    "@repomap/core": "^0.1.0",
     "@anthropic-ai/sdk": "^0.27.0"
   },
   "devDependencies": {
