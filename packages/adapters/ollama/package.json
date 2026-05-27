@@ -1,0 +1,56 @@
+{
+  "name": "@repomap/adapter-ollama",
+  "version": "0.1.0",
+  "description": "Ollama adapter for repomap. Talks to a local Ollama server — no API key, no data leaves your machine. Recommended for private code, air-gapped environments, or zero-spend setups.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "repomap",
+    "ollama",
+    "local-llm",
+    "documentation",
+    "ai",
+    "self-hosted"
+  ],
+  "author": "Yeinthony Vargas <yeinthonyavargas@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/Yeinthony/repomap#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yeinthony/repomap.git",
+    "directory": "packages/adapters/ollama"
+  },
+  "bugs": {
+    "url": "https://github.com/Yeinthony/repomap/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@repomap/core": "^0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  }
+}

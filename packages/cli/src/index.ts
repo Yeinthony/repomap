@@ -138,8 +138,13 @@ const cliDict = {
     doctorAiOkClaude: (source: string) => `AI provider: claude — API key (${source})`,
     doctorAiMissingKey: 'AI provider: claude — no ANTHROPIC_API_KEY and no apiKey in config',
     doctorAiKeyFix: 'export ANTHROPIC_API_KEY="sk-ant-…" or set ai.apiKey in the config',
+    doctorAiOkOllama: (url: string, model: string) => `AI provider: ollama — ${url} reachable, model ${model} pulled`,
+    doctorAiOllamaNoModel: (url: string, model: string) => `AI provider: ollama — ${url} reachable but model ${model} not pulled`,
+    doctorAiOllamaUnreachable: (url: string, why: string) => `AI provider: ollama — ${url} not reachable (${why})`,
+    doctorAiOllamaPullFix: (model: string) => `Run: ollama pull ${model}`,
+    doctorAiOllamaServeFix: 'Run: ollama serve (or open the Ollama desktop app)',
     doctorAiNotImpl: (prov: string) => `AI provider: ${prov} — adapter not implemented yet`,
-    doctorAiNotImplFix: 'Use `claude-code` or `claude` for now',
+    doctorAiNotImplFix: 'Use `claude-code`, `claude`, or `ollama` for now',
     doctorOutputOk: (p: string) => `Output dir writable: ${p}`,
     doctorOutputFail: (p: string) => `Output dir not writable: ${p}`,
     doctorOutputFix: 'Pick a different output.path in the config, or fix permissions',
@@ -254,8 +259,13 @@ const cliDict = {
     doctorAiOkClaude: (source: string) => `Proveedor IA: claude — API key (${source})`,
     doctorAiMissingKey: 'Proveedor IA: claude — no hay ANTHROPIC_API_KEY ni apiKey en config',
     doctorAiKeyFix: 'export ANTHROPIC_API_KEY="sk-ant-…" o define ai.apiKey en la config',
+    doctorAiOkOllama: (url: string, model: string) => `Proveedor IA: ollama — ${url} alcanzable, modelo ${model} listo`,
+    doctorAiOllamaNoModel: (url: string, model: string) => `Proveedor IA: ollama — ${url} alcanzable pero modelo ${model} no está pulleado`,
+    doctorAiOllamaUnreachable: (url: string, why: string) => `Proveedor IA: ollama — ${url} no alcanzable (${why})`,
+    doctorAiOllamaPullFix: (model: string) => `Corre: ollama pull ${model}`,
+    doctorAiOllamaServeFix: 'Corre: ollama serve (o abre la app de Ollama)',
     doctorAiNotImpl: (prov: string) => `Proveedor IA: ${prov} — adapter aún no implementado`,
-    doctorAiNotImplFix: 'Por ahora usa `claude-code` o `claude`',
+    doctorAiNotImplFix: 'Por ahora usa `claude-code`, `claude` u `ollama`',
     doctorOutputOk: (p: string) => `Carpeta de salida con permisos de escritura: ${p}`,
     doctorOutputFail: (p: string) => `No se puede escribir en la carpeta de salida: ${p}`,
     doctorOutputFix: 'Cambia output.path en la config o ajusta los permisos',
@@ -723,6 +733,26 @@ program
         } else {
           checks.push({ level: 'fail', label: tCli(lang, 'doctorAiMissingKey'), fix: tCli(lang, 'doctorAiKeyFix') })
         }
+      } else if (prov === 'ollama') {
+        const { probeOllama } = await import('@repomap/adapter-ollama')
+        const baseUrl = config.ai.baseUrl ?? 'http://localhost:11434'
+        const model = config.ai.model ?? 'qwen2.5-coder:7b'
+        const probe = await probeOllama(baseUrl, model)
+        if (!probe.reachable) {
+          checks.push({
+            level: 'fail',
+            label: tCli(lang, 'doctorAiOllamaUnreachable')(baseUrl, probe.error ?? 'unknown'),
+            fix: tCli(lang, 'doctorAiOllamaServeFix'),
+          })
+        } else if (probe.modelAvailable === false) {
+          checks.push({
+            level: 'fail',
+            label: tCli(lang, 'doctorAiOllamaNoModel')(baseUrl, model),
+            fix: tCli(lang, 'doctorAiOllamaPullFix')(model),
+          })
+        } else {
+          checks.push({ level: 'ok', label: tCli(lang, 'doctorAiOkOllama')(baseUrl, model) })
+        }
       } else {
         checks.push({ level: 'warn', label: tCli(lang, 'doctorAiNotImpl')(prov), fix: tCli(lang, 'doctorAiNotImplFix') })
       }
@@ -1145,8 +1175,9 @@ output:
   format: html                # html | markdown | json
 
 ai:
-  provider: claude-code       # claude-code (usa tu suscripción) | claude (usa ANTHROPIC_API_KEY)
-  # model: sonnet             # 'sonnet' (rápido) | 'opus' (mejor calidad) | id completo del modelo
+  provider: claude-code       # claude-code (usa tu suscripción) | claude (usa ANTHROPIC_API_KEY) | ollama (local, sin key)
+  # model: sonnet             # claude/claude-code: 'sonnet' | 'opus' | id completo   |   ollama: 'qwen2.5-coder:7b' | 'llama3.1:8b' | …
+  # baseUrl: http://localhost:11434   # solo ollama — URL del server
   # maxBudgetUsd: 1.00        # tope de gasto por llamada (solo claude-code)
   # binary: claude            # ruta al binario claude si no está en PATH (solo claude-code)
 
@@ -1175,8 +1206,9 @@ output:
   format: html                # html | markdown | json
 
 ai:
-  provider: claude-code       # claude-code (uses your subscription) | claude (uses ANTHROPIC_API_KEY)
-  # model: sonnet             # 'sonnet' (fast) | 'opus' (best quality) | full model id
+  provider: claude-code       # claude-code (uses your subscription) | claude (uses ANTHROPIC_API_KEY) | ollama (local, no key)
+  # model: sonnet             # claude/claude-code: 'sonnet' | 'opus' | full id   |   ollama: 'qwen2.5-coder:7b' | 'llama3.1:8b' | …
+  # baseUrl: http://localhost:11434   # ollama only — server URL
   # maxBudgetUsd: 1.00        # safety cap per call (claude-code only)
   # binary: claude            # path to claude binary if not on PATH (claude-code only)
 
@@ -1254,11 +1286,19 @@ async function loadAdapter(config: RepomapConfig) {
     return new ClaudeAdapter(config.ai.apiKey)
   }
 
-  if (provider === 'openai' || provider === 'ollama' || provider === 'gemini') {
-    throw new Error(`Adapter for '${provider}' is on the roadmap but not implemented yet. Use 'claude-code' or 'claude'.`)
+  if (provider === 'ollama') {
+    const { OllamaAdapter } = await import('@repomap/adapter-ollama')
+    return new OllamaAdapter({
+      model: config.ai.model,
+      baseUrl: config.ai.baseUrl,
+    })
   }
 
-  throw new Error(`Unknown AI provider: ${provider}. Supported: claude-code, claude`)
+  if (provider === 'openai' || provider === 'gemini') {
+    throw new Error(`Adapter for '${provider}' is on the roadmap but not implemented yet. Use 'claude-code', 'claude', or 'ollama'.`)
+  }
+
+  throw new Error(`Unknown AI provider: ${provider}. Supported: claude-code, claude, ollama`)
 }
 
 function printBanner(): void {

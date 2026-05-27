@@ -27,13 +27,17 @@ Necesitas tres cosas en tu máquina antes de empezar:
    # o:  uv tool install graphifyy
    ```
    Verifica con `which graphify` (debería responder un path).
-3. **Un LLM**, una de estas dos opciones:
+3. **Un LLM**, una de estas tres opciones:
    - **Claude Code instalado y autenticado** (recomendado — usa tu suscripción Pro/Max, no requiere API key)
      - Descarga: <https://claude.com/code>
      - Verifica con `claude --version`
    - **API key de Anthropic** (alternativa para CI/CD)
      - Obtén la key en <https://console.anthropic.com/settings/keys>
      - Exporta: `export ANTHROPIC_API_KEY="sk-ant-..."`
+   - **Ollama local** (privado, sin API key, $0 cost — para código sensible o entornos air-gapped)
+     - Instala: `brew install ollama` o desde <https://ollama.com/download>
+     - Pull un modelo: `ollama pull qwen2.5-coder:7b`
+     - Calidad de prosa por debajo de Sonnet/Opus pero suficiente para overviews y referencia
 
 ---
 
@@ -382,8 +386,8 @@ Ejemplo completo en [`examples/github-actions/repomap.yml`](./examples/github-ac
 - [x] `repomap doctor`, `clean`, `status`, `hooks install`
 - [x] Live-reload en `serve`
 - [x] GitHub Action
+- [x] Adaptador para Ollama (local, privado, sin API key)
 - [ ] Adaptador para Gemini (usa la integración nativa de graphify)
-- [ ] Adaptador para Ollama (local, privado)
 - [ ] Sistema de temas
 - [ ] Chat embebido "Pregúntale a los docs"
 
