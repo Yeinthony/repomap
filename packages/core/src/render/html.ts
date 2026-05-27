@@ -88,14 +88,9 @@ export function generateHTML(
   }
 }
 
-export function generateMarkdown(docs: Documentation, outputPath: string): void {
-  let md = `# ${docs.overview.title}\n\n${docs.overview.summary}\n\n`
-  if (docs.overview.analogy) md += `> ${docs.overview.analogy}\n\n`
-  for (const service of docs.services) {
-    md += `## ${service.name}\n\n${service.purpose}\n\n${service.longDescription}\n\n`
-  }
-  fs.writeFileSync(path.join(outputPath, 'README.md'), md)
-}
+// generateMarkdown lives in ./markdown.ts; re-exported from this module's
+// barrel for backwards compatibility with existing imports.
+export { generateMarkdown } from './markdown.js'
 
 // ── Index / overview ─────────────────────────────────────────────────────────
 

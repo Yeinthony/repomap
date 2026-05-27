@@ -238,7 +238,7 @@ export class Orchestrator {
       return
     }
     if (this.config.output.format === 'markdown') {
-      generateMarkdown(docs, outputPath)
+      generateMarkdown(docs, outputPath, this.config.language)
       return
     }
     generateHTML(docs, graph, outputPath, this.config.language)
