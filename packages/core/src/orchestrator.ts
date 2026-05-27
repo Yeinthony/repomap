@@ -14,6 +14,7 @@ import { runGraphify, mergeGraphifyGraphs, isGraphifyAvailable } from './graphif
 import { buildRepoSummary, detectHttpCalls } from './detectors/index.js'
 import { readPackageMeta } from './detectors/repo-summary.js'
 import { generateHTML, generateMarkdown } from './render/html.js'
+import { debugDumpJson } from './debug.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ORCHESTRATOR
@@ -68,6 +69,8 @@ export class Orchestrator {
       edges: graph.graphify.edges.length,
       httpRelations: graph.httpRelations.length,
     })
+
+    debugDumpJson('code-graph.json', graph)
 
     this.listener({ kind: 'llm-start' })
     const t0 = Date.now()

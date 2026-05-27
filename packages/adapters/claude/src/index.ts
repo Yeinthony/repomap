@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { AIAdapter, CodeGraph, Documentation, RepomapConfig, GitDiff } from '@repomap/core'
-import { compactForLLM, loadDocsSkill } from '@repomap/core'
+import { compactForLLM, loadDocsSkill, debugDump } from '@repomap/core'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLAUDE ADAPTER
@@ -140,6 +140,18 @@ ${compactRepr}
 
 Generate documentation following the JSON schema defined in the system prompt. Output only the JSON object, no markdown fences.`
 
+    debugDump('compact-graph.txt', compactRepr)
+    debugDump('llm-system-prompt.txt', systemBlocks.map((b: any) => b.text).join('\n\n'))
+    debugDump('llm-user-prompt.txt', userPrompt)
+    debugDump('llm-meta.json', JSON.stringify({
+      adapter: 'claude',
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8000,
+      systemBlocksChars: systemBlocks.map((b: any) => b.text.length),
+      userPromptChars: userPrompt.length,
+      compactChars: compactRepr.length,
+    }, null, 2))
+
     const response = await this.client.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 8000,
@@ -147,14 +159,22 @@ Generate documentation following the JSON schema defined in the system prompt. O
       system: systemBlocks,
     })
 
+    debugDump('llm-raw-response.json', JSON.stringify(response, null, 2))
+
     const text = response.content
       .filter((b) => b.type === 'text')
       .map((b) => b.text)
       .join('')
 
-    const doc = JSON.parse(text) as Documentation
-    doc.generatedAt = new Date().toISOString()
-    return doc
+    try {
+      const doc = JSON.parse(text) as Documentation
+      doc.generatedAt = new Date().toISOString()
+      debugDump('parsed-docs.json', JSON.stringify(doc, null, 2))
+      return doc
+    } catch (err: any) {
+      debugDump('parse-error.txt', `${err?.stack ?? err}\n\n=== RAW TEXT ===\n${text}`)
+      throw err
+    }
   }
 
   async updateDocs(

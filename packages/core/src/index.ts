@@ -6,3 +6,4 @@ export { detectEndpoints, detectHttpCalls, detectServiceUrls, buildRepoSummary }
 export { compactForLLM } from './serialize.js'
 export { generateHTML, generateMarkdown, slugify } from './render/html.js'
 export { loadDocsSkill, type LoadedSkill } from './render/docs-skill-loader.js'
+export { isDebugEnabled, debugDir, debugDump, debugDumpJson } from './debug.js'

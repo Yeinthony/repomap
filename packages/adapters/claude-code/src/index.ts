@@ -8,7 +8,7 @@ import type {
   RepomapConfig,
   GitDiff,
 } from '@repomap/core'
-import { compactForLLM, loadDocsSkill } from '@repomap/core'
+import { compactForLLM, loadDocsSkill, debugDump } from '@repomap/core'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLAUDE CODE ADAPTER
@@ -156,10 +156,30 @@ ${compact}
 
 Generate documentation following the JSON schema defined in the system prompt. Output only the JSON object, no markdown fences.`
 
+    debugDump('compact-graph.txt', compact)
+    debugDump('llm-system-prompt.txt', systemPrompt)
+    debugDump('llm-user-prompt.txt', userPrompt)
+    debugDump('llm-meta.json', JSON.stringify({
+      adapter: 'claude-code',
+      model: this.model,
+      binary: this.binary,
+      maxBudgetUsd: this.maxBudgetUsd,
+      systemPromptChars: systemPrompt.length,
+      userPromptChars: userPrompt.length,
+      compactChars: compact.length,
+    }, null, 2))
+
     const raw = await this.runClaude(systemPrompt, userPrompt)
-    const doc = parseDocumentation(raw)
-    doc.generatedAt = new Date().toISOString()
-    return doc
+    debugDump('llm-raw-response.json', raw)
+    try {
+      const doc = parseDocumentation(raw)
+      doc.generatedAt = new Date().toISOString()
+      debugDump('parsed-docs.json', JSON.stringify(doc, null, 2))
+      return doc
+    } catch (err: any) {
+      debugDump('parse-error.txt', String(err?.stack ?? err))
+      throw err
+    }
   }
 
   async updateDocs(

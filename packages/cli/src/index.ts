@@ -52,11 +52,18 @@ const cliDict = {
     serveDirMissing: (dir: string) => `Docs directory not found: ${dir}`,
     serveRunGenerate: 'first.',
     serveRunGeneratePrefix: 'Run',
+    serveLiveReloadOn: 'live-reload on (--no-reload to disable)',
+    serveLiveReloadOff: 'live-reload off',
     initExists: 'repomap.config.yml already exists',
     initCreated: '✓ Created repomap.config.yml',
     initEditPrompt: '  Edit it to point to your repos, then run:',
     graphifyMissing: '✗ graphify CLI not found on PATH.',
     graphifyInstallHint: '  Install with one of:',
+    debugDirCreated: (p: string) => `debug dumps → ${p}`,
+    verboseAdapter: (provider: string, model: string) => `adapter: ${provider} · model: ${model}`,
+    verboseConfigSource: (p: string) => `config: ${p}`,
+    verboseOutputDir: (p: string) => `output: ${p}`,
+    verboseRepoList: (n: number, names: string) => `repos (${n}): ${names}`,
     doctorHeader: 'Doctor — checking your setup',
     doctorAllGood: 'All checks passed. You can run `repomap generate`.',
     doctorHasIssues: 'Some checks failed. Fix the items above and run `repomap doctor` again.',
@@ -111,11 +118,18 @@ const cliDict = {
     serveDirMissing: (dir: string) => `No se encontró el directorio de docs: ${dir}`,
     serveRunGenerate: 'primero.',
     serveRunGeneratePrefix: 'Ejecuta',
+    serveLiveReloadOn: 'live-reload activo (--no-reload para desactivar)',
+    serveLiveReloadOff: 'live-reload desactivado',
     initExists: 'repomap.config.yml ya existe',
     initCreated: '✓ Creado repomap.config.yml',
     initEditPrompt: '  Edítalo apuntando a tus repos y luego corre:',
     graphifyMissing: '✗ graphify CLI no encontrado en PATH.',
     graphifyInstallHint: '  Instálalo con una de estas opciones:',
+    debugDirCreated: (p: string) => `volcados de debug → ${p}`,
+    verboseAdapter: (provider: string, model: string) => `adapter: ${provider} · modelo: ${model}`,
+    verboseConfigSource: (p: string) => `config: ${p}`,
+    verboseOutputDir: (p: string) => `output: ${p}`,
+    verboseRepoList: (n: number, names: string) => `repos (${n}): ${names}`,
     doctorHeader: 'Doctor — revisando tu setup',
     doctorAllGood: 'Todo en orden. Puedes correr `repomap generate`.',
     doctorHasIssues: 'Hay chequeos que fallaron. Corrige lo de arriba y vuelve a correr `repomap doctor`.',
@@ -184,6 +198,8 @@ program
   .option('--ai <provider>', 'AI provider: claude-code | claude (overrides config.ai.provider)')
   .option('--model <model>', 'Model alias or id (overrides config.ai.model)')
   .option('--lang <language>', 'Documentation language: en | es (overrides config.language)')
+  .option('-v, --verbose', 'Print extra info (adapter, model, paths, repo counts)')
+  .option('--debug', 'Dump graph, prompts, raw response to <output>/.repomap-debug/<timestamp>/')
   .action(async (options) => {
     const lang = resolveLang(options)
     printBanner()
@@ -198,6 +214,25 @@ program
 
     const config = loadConfig(options)
     const adapter = await loadAdapter(config)
+
+    if (options.debug) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      const dbgDir = path.resolve(config.output?.path ?? './repomap-docs', '.repomap-debug', stamp)
+      fs.mkdirSync(dbgDir, { recursive: true })
+      process.env.REPOMAP_DEBUG_DIR = dbgDir
+      console.log(chalk.dim('  ' + tCli(lang, 'debugDirCreated')(dbgDir)))
+    }
+
+    if (options.verbose) {
+      const configPath = path.resolve(options.config ?? 'repomap.config.yml')
+      const configShown = fs.existsSync(configPath) ? path.relative(process.cwd(), configPath) || configPath : '(none, using flags)'
+      console.log(chalk.dim('  ' + tCli(lang, 'verboseConfigSource')(configShown)))
+      console.log(chalk.dim('  ' + tCli(lang, 'verboseAdapter')(config.ai.provider, config.ai.model ?? 'sonnet')))
+      console.log(chalk.dim('  ' + tCli(lang, 'verboseOutputDir')(path.resolve(config.output?.path ?? './repomap-docs'))))
+      console.log(chalk.dim('  ' + tCli(lang, 'verboseRepoList')(config.repos.length, config.repos.map((r) => r.name).join(', '))))
+      console.log('')
+    }
+
     const spinner = ora({ text: tCli(lang, 'starting'), spinner: 'dots' }).start()
 
     try {
@@ -239,6 +274,9 @@ program
     } catch (err: any) {
       spinner.fail(chalk.red(tCli(lang, 'generationFailed')))
       console.error(chalk.red(err.message))
+      if (process.env.REPOMAP_DEBUG_DIR) {
+        console.log(chalk.dim('  ' + tCli(lang, 'debugDirCreated')(process.env.REPOMAP_DEBUG_DIR)))
+      }
       process.exit(1)
     }
   })
@@ -333,16 +371,18 @@ program
 
 program
   .command('serve')
-  .description('Open the generated docs in your browser')
+  .description('Open the generated docs in your browser (with live-reload)')
   .option('-p, --port <port>', 'Port number', '4040')
   .option('-d, --dir <path>', 'Docs directory', './repomap-docs')
   .option('--lang <language>', 'Override language: en | es')
   .option('--no-open', "Don't open the browser automatically")
+  .option('--no-reload', 'Disable live-reload (don\'t watch the docs dir)')
   .action(async (options) => {
     const lang = resolveLang(options)
     const { createServer } = await import('http')
     const { readFileSync, existsSync, statSync } = await import('fs')
     const open = (await import('open')).default
+    const chokidar = (await import('chokidar')).default
 
     const docsDir = path.resolve(options.dir)
     if (!existsSync(docsDir)) {
@@ -350,6 +390,8 @@ program
       console.log(chalk.dim(tCli(lang, 'serveRunGeneratePrefix')), chalk.cyan('repomap generate'), chalk.dim(tCli(lang, 'serveRunGenerate')))
       process.exit(1)
     }
+
+    const reloadEnabled = options.reload !== false
 
     const MIME: Record<string, string> = {
       '.html': 'text/html; charset=utf-8',
@@ -377,9 +419,33 @@ program
       '.pdf':  'application/pdf',
     }
 
-    const server = createServer((req, res) => {
+    // Connected SSE clients. Broadcasted to on every (debounced) file change.
+    const sseClients = new Set<any>()
+
+    // Injected just before </body> on HTML responses when reload is enabled.
+    // EventSource auto-reconnects, so a server restart still recovers cleanly.
+    const RELOAD_SNIPPET = `<script>(function(){try{var es=new EventSource('/__repomap/reload');es.onmessage=function(m){if(m.data==='reload')location.reload();};}catch(e){}})();</script>`
+
+    const server = createServer((req: any, res: any) => {
       try {
         const urlPath = decodeURIComponent((req.url || '/').split('?')[0])
+
+        // SSE endpoint for live-reload
+        if (reloadEnabled && urlPath === '/__repomap/reload') {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          })
+          res.write(': connected\n\n')
+          sseClients.add(res)
+          const drop = () => { sseClients.delete(res); try { res.end() } catch {} }
+          req.on('close', drop)
+          req.on('error', drop)
+          return
+        }
+
         let filePath = path.join(docsDir, urlPath === '/' ? 'index.html' : urlPath)
         // Block path traversal: resolved path must stay inside docsDir.
         const resolved = path.resolve(filePath)
@@ -397,6 +463,18 @@ program
         if (existsSync(filePath) && statSync(filePath).isFile()) {
           const ext = path.extname(filePath).toLowerCase()
           const contentType = MIME[ext] ?? 'application/octet-stream'
+
+          // Inject reload snippet into HTML so each page becomes self-reloading.
+          if (reloadEnabled && contentType.startsWith('text/html')) {
+            let html = readFileSync(filePath, 'utf-8')
+            html = html.includes('</body>')
+              ? html.replace('</body>', RELOAD_SNIPPET + '</body>')
+              : html + RELOAD_SNIPPET
+            res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-cache' })
+            res.end(html)
+            return
+          }
+
           res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'no-cache' })
           res.end(readFileSync(filePath))
         } else {
@@ -409,21 +487,45 @@ program
       }
     })
 
+    // Watch docsDir and broadcast to SSE clients on change (debounced 100ms).
+    let watcher: any = null
+    if (reloadEnabled) {
+      watcher = chokidar.watch(docsDir, {
+        ignoreInitial: true,
+        ignored: /(^|[\\/])\.[^\\/]/,   // skip dotfiles
+      })
+      let timer: NodeJS.Timeout | null = null
+      const broadcast = () => {
+        for (const client of sseClients) {
+          try { client.write('data: reload\n\n') } catch { sseClients.delete(client) }
+        }
+      }
+      watcher.on('all', () => {
+        if (timer) clearTimeout(timer)
+        timer = setTimeout(broadcast, 100)
+      })
+    }
+
     const port = Number(options.port)
     server.listen(port, () => {
       const url = `http://localhost:${port}`
       console.log('')
       console.log(chalk.green('  ' + tCli(lang, 'serveRunning')(chalk.cyan(url))))
+      console.log(chalk.dim('  ' + (reloadEnabled ? tCli(lang, 'serveLiveReloadOn') : tCli(lang, 'serveLiveReloadOff'))))
       console.log('')
       if (options.open !== false) open(url)
     })
 
-    process.on('SIGINT', () => {
+    const shutdown = () => {
       console.log('')
       console.log(chalk.dim('  bye'))
+      if (watcher) watcher.close().catch(() => {})
+      for (const client of sseClients) { try { client.end() } catch {} }
       server.close(() => process.exit(0))
       setTimeout(() => process.exit(0), 500).unref()
-    })
+    }
+    process.on('SIGINT', shutdown)
+    process.on('SIGTERM', shutdown)
   })
 
 // ── doctor command ────────────────────────────────────────────────────────────
