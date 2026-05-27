@@ -97,6 +97,24 @@ const cliDict = {
     ageHours: (h: number) => `${h}h ago`,
     ageDays: (d: number) => `${d}d ago`,
     ageMonths: (mo: number) => `~${mo}mo ago`,
+    hooksInstallHeader: 'Installing post-merge hooks',
+    hooksUninstallHeader: 'Uninstalling post-merge hooks',
+    hooksStatusHeader: 'Hook status',
+    hooksInstalled: (name: string) => `${name}: installed`,
+    hooksUpdated: (name: string) => `${name}: updated`,
+    hooksRemoved: (name: string) => `${name}: removed`,
+    hooksAlreadyOurs: (name: string) => `${name}: already installed`,
+    hooksConflict: (name: string) => `${name}: existing hook is not ours — pass --force to overwrite`,
+    hooksNoneToRemove: (name: string) => `${name}: nothing to remove`,
+    hooksForeign: (name: string) => `${name}: foreign hook present (not installed by repomap)`,
+    hooksMissing: (name: string) => `${name}: not installed`,
+    hooksOurs: (name: string) => `${name}: installed (repomap hook)`,
+    hooksNotGit: (name: string, p: string) => `${name}: ${p} is not a git repo, skipping`,
+    hooksRepoMissing: (name: string, p: string) => `${name}: path ${p} doesn't exist`,
+    hooksSummary: (installed: number, skipped: number) => `${installed} installed, ${skipped} skipped`,
+    hooksRemoveSummary: (removed: number, skipped: number) => `${removed} removed, ${skipped} skipped`,
+    hooksTipCost: 'Note: each git pull/merge will trigger `repomap generate` (LLM call) in background.',
+    hooksTipLog: 'Hook logs go to /tmp/repomap-hook.log',
     doctorHeader: 'Doctor — checking your setup',
     doctorAllGood: 'All checks passed. You can run `repomap generate`.',
     doctorHasIssues: 'Some checks failed. Fix the items above and run `repomap doctor` again.',
@@ -195,6 +213,24 @@ const cliDict = {
     ageHours: (h: number) => `hace ${h}h`,
     ageDays: (d: number) => `hace ${d} ${d === 1 ? 'día' : 'días'}`,
     ageMonths: (mo: number) => `hace ~${mo} ${mo === 1 ? 'mes' : 'meses'}`,
+    hooksInstallHeader: 'Instalando hooks post-merge',
+    hooksUninstallHeader: 'Desinstalando hooks post-merge',
+    hooksStatusHeader: 'Estado de los hooks',
+    hooksInstalled: (name: string) => `${name}: instalado`,
+    hooksUpdated: (name: string) => `${name}: actualizado`,
+    hooksRemoved: (name: string) => `${name}: removido`,
+    hooksAlreadyOurs: (name: string) => `${name}: ya está instalado`,
+    hooksConflict: (name: string) => `${name}: ya existe un hook ajeno — pasa --force para sobreescribir`,
+    hooksNoneToRemove: (name: string) => `${name}: nada que remover`,
+    hooksForeign: (name: string) => `${name}: hook ajeno presente (no instalado por repomap)`,
+    hooksMissing: (name: string) => `${name}: no instalado`,
+    hooksOurs: (name: string) => `${name}: instalado (hook de repomap)`,
+    hooksNotGit: (name: string, p: string) => `${name}: ${p} no es un repo git, saltando`,
+    hooksRepoMissing: (name: string, p: string) => `${name}: el path ${p} no existe`,
+    hooksSummary: (installed: number, skipped: number) => `${installed} instalados, ${skipped} saltados`,
+    hooksRemoveSummary: (removed: number, skipped: number) => `${removed} removidos, ${skipped} saltados`,
+    hooksTipCost: 'Nota: cada git pull/merge disparará `repomap generate` (llamada LLM) en background.',
+    hooksTipLog: 'Logs del hook en /tmp/repomap-hook.log',
     doctorHeader: 'Doctor — revisando tu setup',
     doctorAllGood: 'Todo en orden. Puedes correr `repomap generate`.',
     doctorHasIssues: 'Hay chequeos que fallaron. Corrige lo de arriba y vuelve a correr `repomap doctor`.',
@@ -804,6 +840,173 @@ program
     }
     console.log(chalk.green('  ' + tCli(lang, 'cleanDone')))
     if (!options.all) console.log(chalk.dim('  ' + tCli(lang, 'cleanAllHint')))
+  })
+
+// ── hooks command ─────────────────────────────────────────────────────────────
+
+const HOOK_NAME = 'post-merge'
+const HOOK_MARKER = '# repomap auto-generated hook — do not edit by hand'
+
+function buildHookScript(workspaceDir: string): string {
+  return `#!/bin/sh
+${HOOK_MARKER}
+# Installed by 'repomap hooks install'. To remove: 'repomap hooks uninstall'.
+cd ${shellQuote(workspaceDir)} || exit 0
+if command -v repomap >/dev/null 2>&1; then
+  (nohup repomap generate > /tmp/repomap-hook.log 2>&1 &) </dev/null
+  echo "repomap: regenerating docs in background (log: /tmp/repomap-hook.log)"
+else
+  echo "repomap: command not found on PATH, skipping doc update" >&2
+fi
+`
+}
+
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+type HookState = 'ours' | 'foreign' | 'missing' | 'not-git' | 'no-repo'
+
+function inspectHook(repoPath: string): { state: HookState; hookPath: string | null } {
+  if (!fs.existsSync(repoPath)) return { state: 'no-repo', hookPath: null }
+  const gitDir = path.join(repoPath, '.git')
+  // .git can be a file in worktrees/submodules; treat both as git
+  if (!fs.existsSync(gitDir)) return { state: 'not-git', hookPath: null }
+  const hooksDir = path.join(gitDir, 'hooks')
+  const hookPath = path.join(hooksDir, HOOK_NAME)
+  if (!fs.existsSync(hookPath)) return { state: 'missing', hookPath }
+  try {
+    const content = fs.readFileSync(hookPath, 'utf-8')
+    return { state: content.includes(HOOK_MARKER) ? 'ours' : 'foreign', hookPath }
+  } catch {
+    return { state: 'foreign', hookPath }
+  }
+}
+
+const hooksCmd = program
+  .command('hooks')
+  .description('Manage git hooks that auto-regenerate docs on pull/merge')
+
+hooksCmd
+  .command('install')
+  .description('Install post-merge hook in each repo from the config')
+  .option('-c, --config <path>', 'Path to config file', 'repomap.config.yml')
+  .option('-r, --repos <paths...>', 'Repo paths (overrides config.repos)')
+  .option('--force', 'Overwrite an existing hook that was not installed by repomap')
+  .option('--lang <language>', 'Override language: en | es')
+  .action((options) => {
+    const lang = resolveLang(options)
+    const config = loadConfig(options)
+    const workspaceDir = path.dirname(path.resolve(options.config ?? 'repomap.config.yml'))
+    const script = buildHookScript(workspaceDir)
+
+    printBanner()
+    console.log(chalk.bold('  ' + tCli(lang, 'hooksInstallHeader')))
+    console.log('')
+
+    let installed = 0
+    let skipped = 0
+    for (const repo of config.repos) {
+      const repoPath = path.resolve(repo.path)
+      const { state, hookPath } = inspectHook(repoPath)
+      if (state === 'no-repo') {
+        console.log('    ' + chalk.red('✗ ') + tCli(lang, 'hooksRepoMissing')(repo.name, repoPath))
+        skipped++
+        continue
+      }
+      if (state === 'not-git') {
+        console.log('    ' + chalk.yellow('⚠ ') + tCli(lang, 'hooksNotGit')(repo.name, repoPath))
+        skipped++
+        continue
+      }
+      if (state === 'foreign' && !options.force) {
+        console.log('    ' + chalk.yellow('⚠ ') + tCli(lang, 'hooksConflict')(repo.name))
+        skipped++
+        continue
+      }
+      const wasOurs = state === 'ours'
+      fs.mkdirSync(path.dirname(hookPath!), { recursive: true })
+      fs.writeFileSync(hookPath!, script, { mode: 0o755 })
+      fs.chmodSync(hookPath!, 0o755) // explicit chmod for filesystems that ignore mode on write
+      console.log('    ' + chalk.green((wasOurs ? '↻ ' : '✓ ')) + (wasOurs ? tCli(lang, 'hooksUpdated')(repo.name) : tCli(lang, 'hooksInstalled')(repo.name)))
+      installed++
+    }
+    console.log('')
+    console.log('  ' + chalk.dim(tCli(lang, 'hooksSummary')(installed, skipped)))
+    if (installed > 0) {
+      console.log('  ' + chalk.dim(tCli(lang, 'hooksTipCost')))
+      console.log('  ' + chalk.dim(tCli(lang, 'hooksTipLog')))
+    }
+  })
+
+hooksCmd
+  .command('uninstall')
+  .description('Remove post-merge hooks previously installed by repomap')
+  .option('-c, --config <path>', 'Path to config file', 'repomap.config.yml')
+  .option('-r, --repos <paths...>', 'Repo paths (overrides config.repos)')
+  .option('--lang <language>', 'Override language: en | es')
+  .action((options) => {
+    const lang = resolveLang(options)
+    const config = loadConfig(options)
+    printBanner()
+    console.log(chalk.bold('  ' + tCli(lang, 'hooksUninstallHeader')))
+    console.log('')
+
+    let removed = 0
+    let skipped = 0
+    for (const repo of config.repos) {
+      const repoPath = path.resolve(repo.path)
+      const { state, hookPath } = inspectHook(repoPath)
+      if (state === 'ours' && hookPath) {
+        fs.rmSync(hookPath)
+        console.log('    ' + chalk.green('✓ ') + tCli(lang, 'hooksRemoved')(repo.name))
+        removed++
+      } else if (state === 'foreign') {
+        console.log('    ' + chalk.yellow('⚠ ') + tCli(lang, 'hooksForeign')(repo.name))
+        skipped++
+      } else {
+        console.log('    ' + chalk.dim('· ') + tCli(lang, 'hooksNoneToRemove')(repo.name))
+        skipped++
+      }
+    }
+    console.log('')
+    console.log('  ' + chalk.dim(tCli(lang, 'hooksRemoveSummary')(removed, skipped)))
+  })
+
+hooksCmd
+  .command('status')
+  .description('Show which repos have the repomap hook installed')
+  .option('-c, --config <path>', 'Path to config file', 'repomap.config.yml')
+  .option('-r, --repos <paths...>', 'Repo paths (overrides config.repos)')
+  .option('--lang <language>', 'Override language: en | es')
+  .action((options) => {
+    const lang = resolveLang(options)
+    const config = loadConfig(options)
+    printBanner()
+    console.log(chalk.bold('  ' + tCli(lang, 'hooksStatusHeader')))
+    console.log('')
+    for (const repo of config.repos) {
+      const repoPath = path.resolve(repo.path)
+      const { state } = inspectHook(repoPath)
+      switch (state) {
+        case 'ours':
+          console.log('    ' + chalk.green('✓ ') + tCli(lang, 'hooksOurs')(repo.name))
+          break
+        case 'foreign':
+          console.log('    ' + chalk.yellow('⚠ ') + tCli(lang, 'hooksForeign')(repo.name))
+          break
+        case 'missing':
+          console.log('    ' + chalk.dim('· ') + tCli(lang, 'hooksMissing')(repo.name))
+          break
+        case 'not-git':
+          console.log('    ' + chalk.yellow('⚠ ') + tCli(lang, 'hooksNotGit')(repo.name, repoPath))
+          break
+        case 'no-repo':
+          console.log('    ' + chalk.red('✗ ') + tCli(lang, 'hooksRepoMissing')(repo.name, repoPath))
+          break
+      }
+    }
+    console.log('')
   })
 
 // ── status command ────────────────────────────────────────────────────────────
