@@ -86,6 +86,9 @@ const dict = {
     tutorialNoteTip: 'Tip',
     tutorialNoteWarning: 'Heads up',
     tutorialNoteInfo: 'Note',
+    themeLight: 'Light theme',
+    themeDark: 'Dark theme',
+    themeSystem: 'Match system',
   },
   es: {
     badgeDocumentation: 'Documentación',
@@ -167,6 +170,9 @@ const dict = {
     tutorialNoteTip: 'Tip',
     tutorialNoteWarning: 'Atención',
     tutorialNoteInfo: 'Nota',
+    themeLight: 'Tema claro',
+    themeDark: 'Tema oscuro',
+    themeSystem: 'Tema del sistema',
   },
 } as const
 

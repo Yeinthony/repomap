@@ -29,46 +29,88 @@ export function getMermaidInit(lang: Lang | undefined = 'en'): string {
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <script>
 (function() {
-  mermaid.initialize({
-    startOnLoad: false,
-    theme: 'base',
-    fontFamily: 'IBM Plex Mono, ui-monospace, monospace',
-    themeVariables: {
-      background: '#181410',
-      primaryColor: '#221c16',
-      primaryTextColor: '#f6efe2',
-      primaryBorderColor: '#322820',
-      lineColor: '#c4b6a0',
-      secondaryColor: '#2c241c',
-      tertiaryColor: '#15110c',
-      mainBkg: '#221c16',
-      nodeBorder: '#4a3c30',
-      clusterBkg: '#15110c',
-      clusterBorder: '#322820',
-      edgeLabelBackground: '#181410',
-      titleColor: '#e8a04a',
-      noteBkgColor: '#221c16',
-      noteBorderColor: '#e8a04a',
-      noteTextColor: '#f6efe2',
-      actorBkg: '#221c16',
-      actorBorder: '#e8a04a',
-      actorTextColor: '#f6efe2',
-      actorLineColor: '#c4b6a0',
-      signalColor: '#c4b6a0',
-      signalTextColor: '#f6efe2',
-      labelBoxBkgColor: '#221c16',
-      labelBoxBorderColor: '#e8a04a',
-      labelTextColor: '#f6efe2',
-      loopTextColor: '#f6efe2',
-      activationBorderColor: '#e8a04a',
-      activationBkgColor: '#2c241c'
-    },
-    flowchart: { curve: 'basis', padding: 18 },
-    sequence: { actorMargin: 60, boxMargin: 12 },
+  // Themed variable maps for mermaid. Both palettes are derived from the
+  // editorial light + warm dark systems used by the rest of the docs.
+  const themeVarsLight = {
+    background: '#ffffff',
+    primaryColor: '#ffffff',
+    primaryTextColor: '#1f1b15',
+    primaryBorderColor: '#d8cfb8',
+    lineColor: '#8f8675',
+    secondaryColor: '#f6f3ea',
+    tertiaryColor: '#fbf9f3',
+    mainBkg: '#ffffff',
+    nodeBorder: '#c8bda1',
+    clusterBkg: '#fbf9f3',
+    clusterBorder: '#d8cfb8',
+    edgeLabelBackground: '#fbf9f3',
+    titleColor: '#ad5612',
+    noteBkgColor: '#f6f3ea',
+    noteBorderColor: '#ad5612',
+    noteTextColor: '#1f1b15',
+    actorBkg: '#ffffff',
+    actorBorder: '#ad5612',
+    actorTextColor: '#1f1b15',
+    actorLineColor: '#8f8675',
+    signalColor: '#5e574a',
+    signalTextColor: '#1f1b15',
+    labelBoxBkgColor: '#f6f3ea',
+    labelBoxBorderColor: '#ad5612',
+    labelTextColor: '#1f1b15',
+    loopTextColor: '#1f1b15',
+    activationBorderColor: '#ad5612',
+    activationBkgColor: '#f2eee2'
+  }
+  const themeVarsDark = {
+    background: '#181410',
+    primaryColor: '#221c16',
+    primaryTextColor: '#f6efe2',
+    primaryBorderColor: '#322820',
+    lineColor: '#c4b6a0',
+    secondaryColor: '#2c241c',
+    tertiaryColor: '#15110c',
+    mainBkg: '#221c16',
+    nodeBorder: '#4a3c30',
+    clusterBkg: '#15110c',
+    clusterBorder: '#322820',
+    edgeLabelBackground: '#181410',
+    titleColor: '#e8a04a',
+    noteBkgColor: '#221c16',
+    noteBorderColor: '#e8a04a',
+    noteTextColor: '#f6efe2',
+    actorBkg: '#221c16',
+    actorBorder: '#e8a04a',
+    actorTextColor: '#f6efe2',
+    actorLineColor: '#c4b6a0',
+    signalColor: '#c4b6a0',
+    signalTextColor: '#f6efe2',
+    labelBoxBkgColor: '#221c16',
+    labelBoxBorderColor: '#e8a04a',
+    labelTextColor: '#f6efe2',
+    loopTextColor: '#f6efe2',
+    activationBorderColor: '#e8a04a',
+    activationBkgColor: '#2c241c'
+  }
+
+  function initMermaid(theme) {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      fontFamily: 'IBM Plex Mono, ui-monospace, monospace',
+      themeVariables: theme === 'dark' ? themeVarsDark : themeVarsLight,
+      flowchart: { curve: 'basis', padding: 18 },
+      sequence: { actorMargin: 60, boxMargin: 12 },
+    })
+  }
+
+  // Stash original source so we can re-render under a different theme.
+  // Mermaid replaces the .mermaid contents with rendered SVG; without
+  // the cached source we'd lose the diagram on re-init.
+  document.querySelectorAll('.mermaid').forEach((el) => {
+    if (!el.dataset.src) el.dataset.src = el.textContent.trim()
   })
 
-  // Render all diagrams, then add expand buttons.
-  mermaid.run().then(() => {
+  function attachExpandButtons() {
     document.querySelectorAll('.mermaid-wrapper').forEach((wrapper) => {
       if (wrapper.querySelector('.mermaid-expand-btn')) return
       const btn = document.createElement('button')
@@ -78,6 +120,30 @@ export function getMermaidInit(lang: Lang | undefined = 'en'): string {
       btn.addEventListener('click', () => openModal(wrapper))
       wrapper.appendChild(btn)
     })
+  }
+
+  async function renderAll(theme) {
+    initMermaid(theme)
+    // Restore the original source on each diagram and clear mermaid's
+    // processed flag so .run() picks them up again.
+    document.querySelectorAll('.mermaid').forEach((el) => {
+      if (el.dataset.src) {
+        el.innerHTML = el.dataset.src
+        el.removeAttribute('data-processed')
+      }
+    })
+    try {
+      await mermaid.run()
+    } catch (e) { /* ignore parse errors on re-render */ }
+    attachExpandButtons()
+  }
+
+  const initialTheme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'
+  renderAll(initialTheme)
+
+  document.addEventListener('themechange', (e) => {
+    const t = (e.detail && e.detail.theme) === 'dark' ? 'dark' : 'light'
+    renderAll(t)
   })
 
   // ── Modal with pan + zoom ──

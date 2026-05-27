@@ -1011,6 +1011,7 @@ function shell({ lang, title, sidebar, body, tocItems = [], tocHTML, extraScript
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHTML(title)}</title>
+  ${getThemeInitScript()}
   ${getFontImports()}
   ${getSharedCSS()}
 </head>
@@ -1025,10 +1026,75 @@ function shell({ lang, title, sidebar, body, tocItems = [], tocHTML, extraScript
   ${getMermaidInit(lang)}
   ${getTocScrollSpy()}
   ${getSidebarDropdown()}
+  ${getThemeSwitcherScript()}
   ${extraScripts}
   ${getCodeBlockEnhancer(lang)}
 </body>
 </html>`
+}
+
+// Sync script in <head> that resolves the theme BEFORE CSS paints so the
+// page doesn't flash the wrong palette. Reads localStorage 'repomap-theme'
+// (null|"system" → use prefers-color-scheme).
+function getThemeInitScript(): string {
+  return `<script>
+(function () {
+  try {
+    var pref = localStorage.getItem('repomap-theme')
+    var resolved = (pref === 'light' || pref === 'dark')
+      ? pref
+      : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+    document.documentElement.setAttribute('data-theme', resolved)
+    document.documentElement.setAttribute('data-theme-pref', pref || 'system')
+  } catch (e) {
+    document.documentElement.setAttribute('data-theme', 'light')
+    document.documentElement.setAttribute('data-theme-pref', 'system')
+  }
+})()
+</script>`
+}
+
+function getThemeSwitcherScript(): string {
+  return `<script>
+(function () {
+  var root = document.documentElement
+  var mql = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
+  var buttons = document.querySelectorAll('.theme-switcher button[data-theme-set]')
+  if (buttons.length === 0) return
+
+  function resolve(pref) {
+    if (pref === 'light' || pref === 'dark') return pref
+    return mql && mql.matches ? 'dark' : 'light'
+  }
+  function apply(pref) {
+    var theme = resolve(pref)
+    root.setAttribute('data-theme', theme)
+    root.setAttribute('data-theme-pref', pref)
+    try {
+      if (pref === 'system') localStorage.removeItem('repomap-theme')
+      else localStorage.setItem('repomap-theme', pref)
+    } catch (e) {}
+    buttons.forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.dataset.themeSet === pref))
+    })
+    document.dispatchEvent(new CustomEvent('themechange', { detail: { theme: theme, pref: pref } }))
+  }
+
+  var initial = root.getAttribute('data-theme-pref') || 'system'
+  buttons.forEach(function (b) {
+    b.setAttribute('aria-pressed', String(b.dataset.themeSet === initial))
+    b.addEventListener('click', function () { apply(b.dataset.themeSet) })
+  })
+
+  if (mql) {
+    var onChange = function () {
+      if ((root.getAttribute('data-theme-pref') || 'system') === 'system') apply('system')
+    }
+    if (mql.addEventListener) mql.addEventListener('change', onChange)
+    else if (mql.addListener) mql.addListener(onChange)
+  }
+})()
+</script>`
 }
 
 function getSidebarDropdown(): string {
@@ -1224,26 +1290,47 @@ function buildSidebar(docs: Documentation, active: string, lang: Lang, relRoot =
 
   return `
   <nav class="sidebar">
-    <div class="sidebar-logo">
-      <div class="logo-mark">R</div>
-      <span class="logo-text">repomap</span>
+    <div class="sidebar-scroll">
+      <div class="sidebar-logo">
+        <div class="logo-mark">R</div>
+        <span class="logo-text">repomap</span>
+      </div>
+      ${gsHTML}
+      <div class="sidebar-section">
+        <div class="sidebar-label">${t(lang, 'sidebarOverview')}</div>
+        <a href="${relRoot}" class="sidebar-link ${active === 'overview' ? 'active' : ''}">${t(lang, 'sidebarIntroduction')}</a>
+        <a href="${relRoot}integrations/" class="sidebar-link ${active === 'integrations' ? 'active' : ''}">${t(lang, 'sidebarIntegrations')}</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">${t(lang, 'sidebarServices')}</div>
+        ${serviceLinks}
+      </div>
+      ${hasAnyApiRef ? `
+      <div class="sidebar-section">
+        <div class="sidebar-label">${t(lang, 'sidebarApiReference')}</div>
+        ${apiRefGroups}
+      </div>` : ''}
     </div>
-    ${gsHTML}
-    <div class="sidebar-section">
-      <div class="sidebar-label">${t(lang, 'sidebarOverview')}</div>
-      <a href="${relRoot}" class="sidebar-link ${active === 'overview' ? 'active' : ''}">${t(lang, 'sidebarIntroduction')}</a>
-      <a href="${relRoot}integrations/" class="sidebar-link ${active === 'integrations' ? 'active' : ''}">${t(lang, 'sidebarIntegrations')}</a>
-    </div>
-    <div class="sidebar-section">
-      <div class="sidebar-label">${t(lang, 'sidebarServices')}</div>
-      ${serviceLinks}
-    </div>
-    ${hasAnyApiRef ? `
-    <div class="sidebar-section">
-      <div class="sidebar-label">${t(lang, 'sidebarApiReference')}</div>
-      ${apiRefGroups}
-    </div>` : ''}
+    ${getThemeSwitcherWidget(lang)}
   </nav>`
+}
+
+function getThemeSwitcherWidget(lang: Lang): string {
+  const labelLight = t(lang, 'themeLight')
+  const labelDark = t(lang, 'themeDark')
+  const labelSystem = t(lang, 'themeSystem')
+  // SVG icons: sun · monitor · moon (1.5 stroke, currentColor)
+  const sunSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>'
+  const sysSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>'
+  const moonSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
+  return `
+    <div class="sidebar-footer">
+      <div class="theme-switcher" role="group" aria-label="Theme">
+        <button type="button" data-theme-set="light" title="${labelLight}" aria-label="${labelLight}">${sunSvg}</button>
+        <button type="button" data-theme-set="system" title="${labelSystem}" aria-label="${labelSystem}">${sysSvg}</button>
+        <button type="button" data-theme-set="dark" title="${labelDark}" aria-label="${labelDark}">${moonSvg}</button>
+      </div>
+    </div>`
 }
 
 function footerHTML(docs: Documentation, lang: Lang): string {

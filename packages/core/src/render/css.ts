@@ -1,8 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared CSS for all generated pages.
-// Aesthetic direction: "Editorial Technical Warmth" — warm dark palette,
+// Aesthetic direction: "Editorial Light" — warm paper-white background,
 // Fraunces (display serif) + IBM Plex Sans (body) + IBM Plex Mono (code).
-// High contrast for reading comfort, no purple gradients, no italic body.
+// Restrained color: mostly grayscale prose with a single amber accent and
+// dark code blocks against the light page (Stripe/Anthropic editorial move).
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function getSharedCSS(): string {
@@ -10,41 +11,41 @@ export function getSharedCSS(): string {
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    /* Warm dark palette */
-    --bg: #0e0c0a;
-    --bg-tint: #15110c;
-    --surface: #181410;
-    --surface-2: #221c16;
-    --surface-3: #2c241c;
-    --border: #322820;
-    --border-strong: #4a3c30;
-    --code-bg: #06050a;            /* near-absolute black for code blocks */
-    --code-header-bg: #1e1812;     /* warmer dark for code header */
+    /* Warm paper-light palette */
+    --bg: #fbf9f3;                 /* warm off-white, paper-like */
+    --bg-tint: #f6f3ea;            /* slightly warmer for sidebar tint */
+    --surface: #ffffff;            /* card / panel — pops gently from bg */
+    --surface-2: #f2eee2;          /* nested / subtle tint */
+    --surface-3: #ebe6d7;          /* deeper tint */
+    --border: #ebe4d3;             /* warm hairline */
+    --border-strong: #d8cfb8;      /* stronger divider */
+    --code-bg: #2b2519;            /* warm taupe — softer than near-black, harmonious with cream */
+    --code-header-bg: #221d13;     /* slightly deeper for header bar */
 
-    /* Text — warmer cream, higher contrast */
-    --text: #f6efe2;
-    --text-strong: #ffffff;
-    --text-muted: #c4b6a0;
-    --text-faint: #8a7f70;
+    /* Text — warm near-black, high contrast on cream */
+    --text: #1f1b15;
+    --text-strong: #0a0807;
+    --text-muted: #5e574a;
+    --text-faint: #8f8675;
 
-    /* Accents — warm amber primary + sage secondary, no AI purple */
-    --accent: #e8a04a;
-    --accent-soft: rgba(232, 160, 74, 0.14);
-    --accent-line: rgba(232, 160, 74, 0.32);
-    --accent-2: #88c0a6;
-    --accent-2-soft: rgba(136, 192, 166, 0.14);
-    --coral: #e08068;
+    /* Accents — deep warm amber for legibility on light, deep sage secondary */
+    --accent: #ad5612;             /* darker amber so it carries weight on cream */
+    --accent-soft: rgba(173, 86, 18, 0.08);
+    --accent-line: rgba(173, 86, 18, 0.28);
+    --accent-2: #2d6a52;
+    --accent-2-soft: rgba(45, 106, 82, 0.08);
+    --coral: #b13a26;
 
-    /* Method colors — muted, warm */
-    --m-get: #88c0a6;
-    --m-post: #6b9bd1;
-    --m-put: #e8c44a;
-    --m-delete: #e08068;
+    /* Method colors — deeper for light bg legibility */
+    --m-get: #2d6a52;
+    --m-post: #295793;
+    --m-put: #8c6310;
+    --m-delete: #b13a26;
 
     /* Layout */
     --sidebar-width: 296px;
     --toc-width: 256px;
-    --content-max: 740px;
+    --content-max: 720px;
 
     /* Typography */
     --font-display: 'Fraunces', 'Iowan Old Style', 'Apple Garamond', Georgia, serif;
@@ -52,16 +53,70 @@ export function getSharedCSS(): string {
     --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   }
 
+  /* ── Dark theme overrides ──
+     Applied when html[data-theme="dark"] is set (by the no-flash init
+     script). The light theme above stays the default. */
+  :root[data-theme="dark"] {
+    --bg: #0e0c0a;
+    --bg-tint: #15110c;
+    --surface: #181410;
+    --surface-2: #221c16;
+    --surface-3: #2c241c;
+    --border: #322820;
+    --border-strong: #4a3c30;
+    --code-bg: #08060a;
+    --code-header-bg: #14110c;
+
+    --text: #f4ecdd;
+    --text-strong: #ffffff;
+    --text-muted: #c4b6a0;
+    --text-faint: #8a7f70;
+
+    --accent: #e8a04a;
+    --accent-soft: rgba(232, 160, 74, 0.14);
+    --accent-line: rgba(232, 160, 74, 0.32);
+    --accent-2: #88c0a6;
+    --accent-2-soft: rgba(136, 192, 166, 0.14);
+    --coral: #e08068;
+
+    --m-get: #88c0a6;
+    --m-post: #6b9bd1;
+    --m-put: #e8c44a;
+    --m-delete: #e08068;
+  }
+
+  :root[data-theme="dark"] ::selection { background: rgba(232, 160, 74, 0.30); color: #ffffff; }
+
+  /* In dark mode, give the page a touch of atmosphere with very faint
+     radial gradients. Light mode stays clean paper. */
+  :root[data-theme="dark"] body {
+    background-image:
+      radial-gradient(ellipse at top, rgba(232, 160, 74, 0.04), transparent 60%),
+      radial-gradient(ellipse at bottom right, rgba(136, 192, 166, 0.03), transparent 50%);
+  }
+
+  /* Code blocks in dark mode use a deeper near-black for a recessed feel
+     (no warm taupe like the light theme). Border/shadow become subtler. */
+  :root[data-theme="dark"] .code-block,
+  :root[data-theme="dark"] pre,
+  :root[data-theme="dark"] .symbol-signature {
+    border-color: var(--border);
+    box-shadow: none;
+  }
+  :root[data-theme="dark"] .code-block-header {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  }
+  :root[data-theme="dark"] .code-block-copy {
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+
   html { scroll-behavior: smooth; }
 
   body {
     background: var(--bg);
-    background-image:
-      radial-gradient(ellipse at top, rgba(232, 160, 74, 0.04), transparent 60%),
-      radial-gradient(ellipse at bottom right, rgba(136, 192, 166, 0.03), transparent 50%);
     color: var(--text);
     font-family: var(--font-body);
-    font-size: 16px;
+    font-size: 16.5px;
     line-height: 1.75;
     font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
     -webkit-font-smoothing: antialiased;
@@ -70,29 +125,41 @@ export function getSharedCSS(): string {
     min-height: 100vh;
   }
 
-  /* ── Sidebar ── */
+  ::selection { background: rgba(173, 86, 18, 0.18); color: var(--text-strong); }
+
+  /* ── Sidebar ──
+     Sidebar is a fixed flex column. The .sidebar-scroll area takes the
+     middle and scrolls internally; the .sidebar-footer (theme switcher)
+     is pinned to the bottom and stays visible regardless of scroll. */
   .sidebar {
     width: var(--sidebar-width);
     height: 100vh;
     background: var(--bg-tint);
     border-right: 1px solid var(--border);
-    padding: 28px 0;
     position: fixed;
     top: 0; left: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    z-index: 100;
+  }
+  .sidebar-scroll {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    z-index: 100;
+    padding: 28px 0 16px;
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
   }
-  .sidebar::-webkit-scrollbar { width: 8px; }
-  .sidebar::-webkit-scrollbar-track { background: transparent; }
-  .sidebar::-webkit-scrollbar-thumb {
+  .sidebar-scroll::-webkit-scrollbar { width: 8px; }
+  .sidebar-scroll::-webkit-scrollbar-track { background: transparent; }
+  .sidebar-scroll::-webkit-scrollbar-thumb {
     background: var(--border);
     border-radius: 4px;
     border: 2px solid var(--bg-tint);
   }
-  .sidebar::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+  .sidebar-scroll::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
 
   .sidebar-logo {
     display: flex;
@@ -374,8 +441,8 @@ export function getSharedCSS(): string {
   .mermaid-modal {
     position: fixed;
     inset: 0;
-    background: rgba(10, 8, 5, 0.92);
-    backdrop-filter: blur(8px);
+    background: rgba(28, 22, 14, 0.78);
+    backdrop-filter: blur(10px);
     z-index: 1000;
     display: none;
     flex-direction: column;
@@ -387,20 +454,20 @@ export function getSharedCSS(): string {
     align-items: center;
     justify-content: space-between;
     padding: 16px 24px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-tint);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(20, 16, 11, 0.72);
   }
   .mermaid-modal-help {
     font-family: var(--font-mono);
     font-size: 12px;
-    color: var(--text-faint);
+    color: #c4b6a0;
     letter-spacing: 0.04em;
   }
   .mermaid-modal-actions { display: flex; gap: 10px; }
   .mermaid-modal-btn {
-    background: var(--surface-2);
-    border: 1px solid var(--border-strong);
-    color: var(--text-muted);
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    color: #f0e9d8;
     font-family: var(--font-mono);
     font-size: 12px;
     padding: 7px 14px;
@@ -409,9 +476,9 @@ export function getSharedCSS(): string {
     transition: all 120ms;
   }
   .mermaid-modal-btn:hover {
-    color: var(--accent);
-    border-color: var(--accent-line);
-    background: var(--accent-soft);
+    color: #ffffff;
+    border-color: rgba(232, 160, 74, 0.55);
+    background: rgba(232, 160, 74, 0.18);
   }
   .mermaid-modal-canvas {
     flex: 1;
@@ -535,11 +602,11 @@ export function getSharedCSS(): string {
   .code-block {
     position: relative;
     margin: 20px 0;
-    border: 1px solid var(--border-strong);
+    border: 1px solid rgba(43, 37, 25, 0.10);
     border-radius: 10px;
     background: var(--code-bg);
     overflow: hidden;
-    box-shadow: 0 1px 0 rgba(232, 160, 74, 0.04) inset, 0 12px 32px -16px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 1px 2px rgba(43, 37, 25, 0.04), 0 6px 18px -12px rgba(43, 37, 25, 0.18);
   }
   .code-block-header {
     display: flex;
@@ -547,7 +614,7 @@ export function getSharedCSS(): string {
     justify-content: space-between;
     padding: 10px 14px;
     background: var(--code-header-bg);
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   }
   .code-block-lang {
     font-family: var(--font-mono);
@@ -555,12 +622,12 @@ export function getSharedCSS(): string {
     font-weight: 500;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--text-faint);
+    color: #8a8070;
   }
   .code-block-copy {
     background: transparent;
-    border: 1px solid var(--border-strong);
-    color: var(--text-muted);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    color: #c4b6a0;
     font-family: var(--font-mono);
     font-size: 11px;
     padding: 4px 10px;
@@ -573,11 +640,11 @@ export function getSharedCSS(): string {
   }
   .code-block-copy svg { width: 12px; height: 12px; }
   .code-block-copy:hover {
-    color: var(--accent);
-    border-color: var(--accent-line);
-    background: var(--accent-soft);
+    color: #e8a04a;
+    border-color: rgba(232, 160, 74, 0.40);
+    background: rgba(232, 160, 74, 0.10);
   }
-  .code-block-copy.copied { color: var(--accent-2); border-color: rgba(136,192,166,0.5); background: var(--accent-2-soft); }
+  .code-block-copy.copied { color: #88c0a6; border-color: rgba(136,192,166,0.5); background: rgba(136,192,166,0.12); }
   .code-block pre {
     margin: 0;
     padding: 18px 20px;
@@ -589,13 +656,15 @@ export function getSharedCSS(): string {
   }
   pre {
     background: var(--code-bg);
-    border: 1px solid var(--border-strong);
+    border: 1px solid rgba(43, 37, 25, 0.10);
     border-radius: 10px;
     padding: 20px 22px;
     overflow-x: auto;
     margin: 20px 0;
     line-height: 1.7;
+    box-shadow: 0 1px 2px rgba(43, 37, 25, 0.04), 0 6px 18px -12px rgba(43, 37, 25, 0.18);
   }
+  pre, .code-block pre, .code-block code { color: #f0e9d8; }
   code {
     font-family: var(--font-mono);
     font-size: 13.5px;
@@ -607,6 +676,7 @@ export function getSharedCSS(): string {
     border-radius: 4px;
     font-size: 13px;
     color: var(--accent);
+    border: 1px solid var(--border);
   }
 
   /* ── File tree ── */
@@ -621,35 +691,27 @@ export function getSharedCSS(): string {
   .tree-file { color: var(--text-muted); }
   .tree-truncated { color: var(--text-faint); font-style: italic; }
 
-  /* ── Syntax highlighting (highlight.js classes, themed to our palette) ── */
-  .hljs { color: var(--text); background: transparent; }
-  .hljs-comment, .hljs-quote { color: var(--text-faint); font-style: italic; }
-  .hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-name {
-    color: var(--accent);
-  }
-  .hljs-string, .hljs-symbol, .hljs-bullet, .hljs-regexp {
-    color: var(--accent-2);
-  }
-  .hljs-number, .hljs-literal, .hljs-variable, .hljs-template-variable {
-    color: var(--coral);
-  }
+  /* ── Syntax highlighting — tuned for DARK code blocks on light page ── */
+  .hljs { color: #f0e9d8; background: transparent; }
+  .hljs-comment, .hljs-quote { color: #8a8070; font-style: italic; }
+  .hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-name { color: #e8a04a; }
+  .hljs-string, .hljs-symbol, .hljs-bullet, .hljs-regexp { color: #88c0a6; }
+  .hljs-number, .hljs-literal, .hljs-variable, .hljs-template-variable { color: #e08068; }
   .hljs-attr, .hljs-attribute { color: #e8c44a; }
-  .hljs-tag { color: var(--text-muted); }
-  .hljs-tag .hljs-name { color: var(--accent-2); }
+  .hljs-tag { color: #c4b6a0; }
+  .hljs-tag .hljs-name { color: #88c0a6; }
   .hljs-tag .hljs-attr { color: #e8c44a; }
-  .hljs-tag .hljs-string { color: var(--text); }
-  .hljs-title, .hljs-section, .hljs-class .hljs-title, .hljs-function .hljs-title {
-    color: var(--text-strong); font-weight: 500;
-  }
-  .hljs-type, .hljs-class { color: var(--accent); }
-  .hljs-meta, .hljs-meta .hljs-keyword { color: var(--text-faint); }
-  .hljs-punctuation { color: var(--text-muted); }
-  .hljs-property { color: var(--text); }
-  .hljs-params { color: var(--text); }
+  .hljs-tag .hljs-string { color: #f0e9d8; }
+  .hljs-title, .hljs-section, .hljs-class .hljs-title, .hljs-function .hljs-title { color: #ffffff; font-weight: 500; }
+  .hljs-type, .hljs-class { color: #e8a04a; }
+  .hljs-meta, .hljs-meta .hljs-keyword { color: #8a8070; }
+  .hljs-punctuation { color: #c4b6a0; }
+  .hljs-property { color: #f0e9d8; }
+  .hljs-params { color: #f0e9d8; }
   .hljs-emphasis { font-style: italic; }
   .hljs-strong { font-weight: 600; }
-  .hljs-deletion { color: var(--coral); background: rgba(224,128,104,0.08); }
-  .hljs-addition { color: var(--accent-2); background: rgba(136,192,166,0.08); }
+  .hljs-deletion { color: #e08068; background: rgba(224,128,104,0.10); }
+  .hljs-addition { color: #88c0a6; background: rgba(136,192,166,0.10); }
 
   /* ── Tables ── */
   .env-table { width: 100%; border-collapse: collapse; }
@@ -1111,15 +1173,16 @@ export function getSharedCSS(): string {
   .symbol-signature {
     font-family: var(--font-mono);
     font-size: 13px;
-    color: var(--accent-2);
+    color: #88c0a6;
     background: var(--code-bg);
-    border: 1px solid var(--border);
+    border: 1px solid rgba(43, 37, 25, 0.10);
     border-radius: 7px;
     padding: 12px 16px;
     margin: 0 0 16px;
     overflow-x: auto;
     line-height: 1.65;
     white-space: pre;
+    box-shadow: 0 1px 2px rgba(43, 37, 25, 0.04), 0 6px 16px -12px rgba(43, 37, 25, 0.18);
   }
 
   .symbol-description {
@@ -1209,37 +1272,48 @@ export function getSharedCSS(): string {
     padding-left: 0;
     margin-bottom: 48px;
   }
-  /* Editorial chapter-mark: a Fraunces numeral sits at the heading's
-     baseline, extending upward like a magazine chapter plate. A single
-     hairline rule below divides the header from its body. */
+  /* Inline mono marker integrated with the title: "01 — Instala repomap…".
+     Single hairline below. The h2's own section divider is suppressed so
+     we don't get a double rule. */
   .tutorial-step-head {
     display: flex;
     align-items: baseline;
-    gap: 20px;
+    gap: 14px;
     margin: 0 0 26px;
     padding-bottom: 14px;
     border-bottom: 1px solid var(--border);
   }
   .tutorial-step-head h2 {
     margin: 0;
+    padding-bottom: 0;
+    border-bottom: none;
     line-height: 1.18;
   }
-  /* The display numeral replaces the generic section bullet. */
   .tutorial-step-head h2::before { display: none; }
   .tutorial-step-marker {
-    font-family: var(--font-display);
-    font-weight: 300;
-    font-variation-settings: 'opsz' 96, 'SOFT' 50;
-    font-size: 40px;
-    line-height: 0.95;
-    letter-spacing: -0.035em;
-    color: var(--text-faint);
-    font-feature-settings: 'lnum' 1, 'tnum' 1;
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: 13px;
+    line-height: 1;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    font-feature-settings: 'tnum' 1;
     flex-shrink: 0;
     background: none;
     border: none;
     padding: 0;
     border-radius: 0;
+    text-transform: none;
+    align-self: baseline;
+    position: relative;
+    top: -0.18em;
+  }
+  .tutorial-step-marker::after {
+    content: ' \\2014';
+    color: var(--text-faint);
+    margin-left: 8px;
+    font-family: var(--font-body);
+    font-weight: 400;
   }
   .tutorial-step p {
     color: var(--text);
@@ -1286,7 +1360,7 @@ export function getSharedCSS(): string {
   }
   .tutorial-note-tip { border-left-color: var(--accent-2); }
   .tutorial-note-tip .tutorial-note-label { color: var(--accent-2); }
-  .tutorial-note-warning { border-left-color: var(--coral); background: rgba(224, 128, 104, 0.04); }
+  .tutorial-note-warning { border-left-color: var(--coral); background: rgba(177, 58, 38, 0.06); }
   .tutorial-note-warning .tutorial-note-label { color: var(--coral); }
   .tutorial-note-info { border-left-color: var(--border-strong); background: var(--surface-2); }
   .tutorial-note-info .tutorial-note-label { color: var(--text-muted); }
@@ -1311,6 +1385,12 @@ export function getSharedCSS(): string {
     padding-bottom: 16px;
     border-bottom: 1px solid var(--border);
   }
+  .troubleshoot-head h2 {
+    margin: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+  }
+  .troubleshoot-head h2::before { display: none; }
   .troubleshoot-label {
     font-family: var(--font-mono);
     font-size: 10.5px;
@@ -1359,6 +1439,52 @@ export function getSharedCSS(): string {
     line-height: 1.7;
     margin-bottom: 40px;
     max-width: 64ch;
+  }
+
+  /* ── Theme switcher (segmented control, pinned at sidebar bottom) ── */
+  .sidebar-footer {
+    flex-shrink: 0;
+    padding: 14px 20px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-tint);
+  }
+  .theme-switcher {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    padding: 3px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+  .theme-switcher button {
+    appearance: none;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    width: 30px;
+    height: 28px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-faint);
+    transition: color 140ms ease, background-color 160ms ease;
+  }
+  .theme-switcher button svg { width: 14px; height: 14px; }
+  .theme-switcher button:hover { color: var(--text); }
+  .theme-switcher button[aria-pressed="true"] {
+    background: var(--surface);
+    color: var(--accent);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  }
+  :root[data-theme="dark"] .theme-switcher button[aria-pressed="true"] {
+    background: var(--surface-3);
+    box-shadow: none;
+  }
+  .theme-switcher button:focus-visible {
+    outline: 2px solid var(--accent-line);
+    outline-offset: 2px;
   }
 
   @media (max-width: 768px) {

@@ -35,6 +35,7 @@ export type Phase =
   | { kind: 'llm-done'; elapsedSec: number }
   | { kind: 'write-start' }
   | { kind: 'done'; outputPath: string }
+  | { kind: 'watch-change'; repo: string; path: string }
 
 export type PhaseListener = (phase: Phase) => void
 
@@ -114,11 +115,19 @@ export class Orchestrator {
       ignoreInitial: true,
     })
     let timeout: NodeJS.Timeout | null = null
+    let queued: string | null = null
     watcher.on('change', (changedPath) => {
+      queued = changedPath
       if (timeout) clearTimeout(timeout)
       timeout = setTimeout(async () => {
-        const repoName = this.getRepoNameForPath(changedPath)
-        await this.incrementalUpdate(repoName, changedPath)
+        const cp = queued
+        queued = null
+        if (!cp) return
+        const repoName = this.getRepoNameForPath(cp)
+        const repoRoot = this.config.repos.find((r) => r.name === repoName)?.path ?? ''
+        const rel = repoRoot ? path.relative(path.resolve(repoRoot), cp) : path.basename(cp)
+        this.listener({ kind: 'watch-change', repo: repoName, path: rel || path.basename(cp) })
+        await this.incrementalUpdate(repoName, cp)
       }, 1500)
     })
   }
