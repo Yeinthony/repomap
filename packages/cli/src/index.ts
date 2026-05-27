@@ -59,6 +59,41 @@ const cliDict = {
     initExists: 'repomap.config.yml already exists',
     initCreated: '✓ Created repomap.config.yml',
     initEditPrompt: '  Edit it to point to your repos, then run:',
+    initHeader: 'Set up a new repomap.config.yml',
+    initNoTty: 'No TTY detected — falling back to static template. Pass --yes to suppress this warning.',
+    initOverwrite: 'repomap.config.yml already exists. Overwrite?',
+    initAbortedExisting: 'Kept the existing repomap.config.yml.',
+    initAskLang: 'Documentation language',
+    initLangEn: 'English',
+    initLangEs: 'Español',
+    initScanning: (dir: string) => `Scanning ${dir} for repos…`,
+    initFoundN: (n: number) => `Found ${n} candidate repos.`,
+    initFoundNone: 'No repo-shaped directories found here. You can add paths manually.',
+    initSelectRepos: 'Select repos to document (space to toggle, enter to confirm)',
+    initSelectAtLeastOne: 'Select at least one repo (or quit and add manually).',
+    initAddManual: 'Add another repo by typing its path?',
+    initAddManualPath: 'Repo path (relative or absolute, blank to finish)',
+    initManualInvalid: (p: string) => `Path "${p}" doesn't exist — skipping.`,
+    initRepoName: (suggested: string) => `Name for "${suggested}" (used in sidebar)`,
+    initRepoDescription: 'One-line description (optional, helps the LLM)',
+    initAskProvider: 'AI provider',
+    initProviderClaudeCode: 'claude-code — uses your local Claude Code subscription (no API key)',
+    initProviderClaude: 'claude — Anthropic API (needs ANTHROPIC_API_KEY)',
+    initProviderOllama: 'ollama — local server, fully private',
+    initProviderDetected: (prov: string) => `(detected: ${prov} is set up)`,
+    initAskModel: 'Model (blank = default)',
+    initAskOllamaUrl: 'Ollama server URL',
+    initAskOutputDir: 'Output directory',
+    initAskFormat: 'Output format',
+    initFormatHtml: 'html — full site with mermaid, syntax highlighting, file tree',
+    initFormatMarkdown: 'markdown — flat .md files, Notion/Obsidian/GitBook friendly',
+    initFormatJson: 'json — raw docs.json for programmatic use',
+    initPreviewHeader: 'Preview of repomap.config.yml',
+    initConfirmWrite: 'Write this config?',
+    initAborted: 'Aborted — no file written.',
+    initDoneNext: 'Next steps:',
+    initDoctorHint: '  repomap doctor   — verify your setup',
+    initGenerateHint: '  repomap generate — create the docs (2-5 min)',
     graphifyMissing: '✗ graphify CLI not found on PATH.',
     graphifyInstallHint: '  Install with one of:',
     debugDirCreated: (p: string) => `debug dumps → ${p}`,
@@ -180,6 +215,41 @@ const cliDict = {
     initExists: 'repomap.config.yml ya existe',
     initCreated: '✓ Creado repomap.config.yml',
     initEditPrompt: '  Edítalo apuntando a tus repos y luego corre:',
+    initHeader: 'Configurar un nuevo repomap.config.yml',
+    initNoTty: 'No hay TTY — uso template estático. Pasa --yes para suprimir este warning.',
+    initOverwrite: 'repomap.config.yml ya existe. ¿Sobreescribir?',
+    initAbortedExisting: 'Mantengo el repomap.config.yml existente.',
+    initAskLang: 'Idioma de la documentación',
+    initLangEn: 'English',
+    initLangEs: 'Español',
+    initScanning: (dir: string) => `Buscando repos en ${dir}…`,
+    initFoundN: (n: number) => `Encontré ${n} candidatos.`,
+    initFoundNone: 'No encontré repos por aquí. Puedes añadir paths a mano.',
+    initSelectRepos: 'Elige los repos a documentar (espacio para marcar, enter para confirmar)',
+    initSelectAtLeastOne: 'Marca al menos uno (o sal y añade a mano).',
+    initAddManual: '¿Añadir otro repo escribiendo el path?',
+    initAddManualPath: 'Path del repo (relativo o absoluto, vacío para terminar)',
+    initManualInvalid: (p: string) => `El path "${p}" no existe — lo salto.`,
+    initRepoName: (suggested: string) => `Nombre para "${suggested}" (aparece en la sidebar)`,
+    initRepoDescription: 'Descripción en una línea (opcional, ayuda al LLM)',
+    initAskProvider: 'Proveedor de IA',
+    initProviderClaudeCode: 'claude-code — usa tu Claude Code local (sin API key)',
+    initProviderClaude: 'claude — API de Anthropic (necesita ANTHROPIC_API_KEY)',
+    initProviderOllama: 'ollama — server local, totalmente privado',
+    initProviderDetected: (prov: string) => `(detectado: ${prov} está listo)`,
+    initAskModel: 'Modelo (vacío = default)',
+    initAskOllamaUrl: 'URL del server Ollama',
+    initAskOutputDir: 'Carpeta de salida',
+    initAskFormat: 'Formato de salida',
+    initFormatHtml: 'html — sitio completo con mermaid, syntax highlighting, file tree',
+    initFormatMarkdown: 'markdown — archivos .md planos, compatible con Notion/Obsidian/GitBook',
+    initFormatJson: 'json — docs.json crudo para uso programático',
+    initPreviewHeader: 'Preview del repomap.config.yml',
+    initConfirmWrite: '¿Escribir esta config?',
+    initAborted: 'Cancelado — no se escribió nada.',
+    initDoneNext: 'Próximos pasos:',
+    initDoctorHint: '  repomap doctor   — verifica tu setup',
+    initGenerateHint: '  repomap generate — genera la doc (2-5 min)',
     graphifyMissing: '✗ graphify CLI no encontrado en PATH.',
     graphifyInstallHint: '  Instálalo con una de estas opciones:',
     debugDirCreated: (p: string) => `volcados de debug → ${p}`,
@@ -1147,21 +1217,313 @@ program
 
 program
   .command('init')
-  .description('Create a repomap.config.yml in the current directory')
-  .option('--lang <language>', 'Template language: en | es', 'en')
-  .action((options) => {
-    const lang: CliLang = options.lang === 'es' ? 'es' : 'en'
+  .description('Create a repomap.config.yml (interactive by default, --yes for the static template)')
+  .option('--lang <language>', 'Documentation language: en | es')
+  .option('-y, --yes', 'Skip interactive flow — write the static template with placeholders')
+  .action(async (options) => {
     const configPath = 'repomap.config.yml'
-    if (fs.existsSync(configPath)) {
-      console.log(chalk.yellow(tCli(lang, 'initExists')))
+    const explicitLang: CliLang | undefined = (options.lang === 'es' || options.lang === 'en') ? options.lang : undefined
+
+    // Non-TTY (CI / piped) → static template, no questions
+    if (options.yes || !process.stdin.isTTY) {
+      if (!options.yes && !process.stdin.isTTY) {
+        console.log(chalk.yellow('  ' + tCli(explicitLang ?? 'en', 'initNoTty')))
+      }
+      const lang: CliLang = explicitLang ?? 'en'
+      if (fs.existsSync(configPath)) {
+        console.log(chalk.yellow(tCli(lang, 'initExists')))
+        return
+      }
+      fs.writeFileSync(configPath, initTemplate(lang))
+      console.log(chalk.green(tCli(lang, 'initCreated')))
+      console.log(chalk.dim(tCli(lang, 'initEditPrompt')))
+      console.log(chalk.cyan('  repomap generate'))
       return
     }
 
-    fs.writeFileSync(configPath, initTemplate(lang))
-    console.log(chalk.green(tCli(lang, 'initCreated')))
-    console.log(chalk.dim(tCli(lang, 'initEditPrompt')))
-    console.log(chalk.cyan('  repomap generate'))
+    try {
+      await runInteractiveInit(configPath, explicitLang)
+    } catch (err: any) {
+      // @inquirer/prompts throws ExitPromptError on Ctrl+C — swallow it
+      // and exit cleanly instead of dumping a stack trace at the user.
+      if (err?.name === 'ExitPromptError') {
+        console.log('')
+        console.log(chalk.dim('  ' + tCli(explicitLang ?? 'en', 'initAborted')))
+        process.exit(130)
+      }
+      throw err
+    }
   })
+
+async function runInteractiveInit(configPath: string, explicitLang?: CliLang): Promise<void> {
+  const { input, select, checkbox, confirm } = await import('@inquirer/prompts')
+
+  printBanner()
+  // Use whatever language we have so far for the header line
+  const startingLang: CliLang = explicitLang ?? 'en'
+  console.log(chalk.bold('  ' + tCli(startingLang, 'initHeader')))
+  console.log('')
+
+  // Existing-file guard with overwrite option
+  if (fs.existsSync(configPath)) {
+    const overwrite = await confirm({
+      message: tCli(startingLang, 'initOverwrite'),
+      default: false,
+    })
+    if (!overwrite) {
+      console.log(chalk.dim('  ' + tCli(startingLang, 'initAbortedExisting')))
+      return
+    }
+  }
+
+  // 1. Language
+  const lang: CliLang = explicitLang ?? (await select({
+    message: tCli(startingLang, 'initAskLang'),
+    choices: [
+      { value: 'en' as CliLang, name: tCli(startingLang, 'initLangEn') },
+      { value: 'es' as CliLang, name: tCli(startingLang, 'initLangEs') },
+    ],
+    default: 'en' as CliLang,
+  }))
+
+  // 2. Detect repo candidates
+  console.log('')
+  console.log(chalk.dim('  ' + tCli(lang, 'initScanning')(process.cwd())))
+  const candidates = detectRepoCandidates(process.cwd())
+  console.log(chalk.dim('  ' + (candidates.length > 0
+    ? tCli(lang, 'initFoundN')(candidates.length)
+    : tCli(lang, 'initFoundNone'))))
+  console.log('')
+
+  // 3. Multi-select detected repos
+  let selectedPaths: string[] = []
+  if (candidates.length > 0) {
+    selectedPaths = await checkbox({
+      message: tCli(lang, 'initSelectRepos'),
+      choices: candidates.map((c) => ({
+        value: c.path,
+        name: `${c.path}  ${chalk.dim('(' + c.markers.join(', ') + ')')}`,
+        checked: true,
+      })),
+    })
+  }
+
+  // 4. Manually add more paths
+  while (true) {
+    const addMore = await confirm({
+      message: tCli(lang, 'initAddManual'),
+      default: selectedPaths.length === 0,
+    })
+    if (!addMore) break
+    const p = (await input({ message: tCli(lang, 'initAddManualPath') })).trim()
+    if (!p) break
+    if (!fs.existsSync(path.resolve(p))) {
+      console.log(chalk.yellow('    ' + tCli(lang, 'initManualInvalid')(p)))
+      continue
+    }
+    if (selectedPaths.includes(p)) continue
+    selectedPaths.push(p)
+  }
+
+  if (selectedPaths.length === 0) {
+    console.log(chalk.yellow('  ' + tCli(lang, 'initSelectAtLeastOne')))
+    console.log(chalk.dim('  ' + tCli(lang, 'initAborted')))
+    return
+  }
+
+  // 5. Per-repo name + description
+  const repos: Array<{ path: string; name: string; description?: string }> = []
+  for (const p of selectedPaths) {
+    const suggested = path.basename(path.resolve(p))
+    const name = (await input({
+      message: tCli(lang, 'initRepoName')(suggested),
+      default: suggested,
+    })).trim() || suggested
+    const description = (await input({
+      message: tCli(lang, 'initRepoDescription'),
+      default: '',
+    })).trim()
+    repos.push(description ? { path: p, name, description } : { path: p, name })
+  }
+
+  // 6. Provider — detect what's already set up to pick a good default
+  console.log('')
+  const detected = await detectBestProvider()
+  const providerHint = detected ? chalk.dim(' ' + tCli(lang, 'initProviderDetected')(detected)) : ''
+  const provider = await select({
+    message: tCli(lang, 'initAskProvider') + providerHint,
+    choices: [
+      { value: 'claude-code' as const, name: tCli(lang, 'initProviderClaudeCode') },
+      { value: 'claude' as const, name: tCli(lang, 'initProviderClaude') },
+      { value: 'ollama' as const, name: tCli(lang, 'initProviderOllama') },
+    ],
+    default: detected ?? 'claude-code',
+  })
+
+  // 7. Provider-specific extras
+  const model = (await input({
+    message: tCli(lang, 'initAskModel'),
+    default: '',
+  })).trim()
+
+  let baseUrl = ''
+  if (provider === 'ollama') {
+    baseUrl = (await input({
+      message: tCli(lang, 'initAskOllamaUrl'),
+      default: 'http://localhost:11434',
+    })).trim()
+  }
+
+  // 8. Output
+  const outputPath = (await input({
+    message: tCli(lang, 'initAskOutputDir'),
+    default: './repomap-docs',
+  })).trim() || './repomap-docs'
+
+  const format = await select({
+    message: tCli(lang, 'initAskFormat'),
+    choices: [
+      { value: 'html' as const, name: tCli(lang, 'initFormatHtml') },
+      { value: 'markdown' as const, name: tCli(lang, 'initFormatMarkdown') },
+      { value: 'json' as const, name: tCli(lang, 'initFormatJson') },
+    ],
+    default: 'html' as const,
+  })
+
+  // 9. Build + preview + confirm
+  const yamlText = buildConfigYaml({
+    repos, provider, model, baseUrl, outputPath, format, lang,
+  })
+
+  console.log('')
+  console.log(chalk.bold('  ' + tCli(lang, 'initPreviewHeader')))
+  console.log('')
+  console.log(yamlText.split('\n').map((l) => '    ' + chalk.dim('│ ') + l).join('\n'))
+  console.log('')
+
+  const writeIt = await confirm({
+    message: tCli(lang, 'initConfirmWrite'),
+    default: true,
+  })
+  if (!writeIt) {
+    console.log(chalk.yellow('  ' + tCli(lang, 'initAborted')))
+    return
+  }
+
+  fs.writeFileSync(configPath, yamlText)
+  console.log(chalk.green('  ' + tCli(lang, 'initCreated')))
+  console.log('')
+  console.log(chalk.dim('  ' + tCli(lang, 'initDoneNext')))
+  console.log(chalk.cyan(tCli(lang, 'initDoctorHint')))
+  console.log(chalk.cyan(tCli(lang, 'initGenerateHint')))
+}
+
+// ── init helpers ──────────────────────────────────────────────────────────────
+
+interface RepoCandidate { path: string; name: string; markers: string[] }
+
+const REPO_MARKERS = ['.git', 'package.json', 'pyproject.toml', 'go.mod', 'Cargo.toml', 'pom.xml', 'build.gradle', 'Gemfile']
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'target', '.next', '.cache', '.venv', 'venv', '__pycache__', 'repomap-docs'])
+
+function repoMarkersIn(dir: string): string[] {
+  const found: string[] = []
+  for (const m of REPO_MARKERS) {
+    try { if (fs.existsSync(path.join(dir, m))) found.push(m) } catch { /* skip */ }
+  }
+  return found
+}
+
+// Scan cwd + 2 levels deep for directories that look like a code repo.
+// Skip hidden dirs and common build/dep outputs to avoid noise.
+function detectRepoCandidates(cwd: string): RepoCandidate[] {
+  const results: RepoCandidate[] = []
+
+  const cwdMarkers = repoMarkersIn(cwd)
+  if (cwdMarkers.length > 0) {
+    results.push({ path: '.', name: path.basename(cwd), markers: cwdMarkers })
+  }
+
+  let level1: fs.Dirent[]
+  try { level1 = fs.readdirSync(cwd, { withFileTypes: true }) } catch { return results }
+  for (const entry of level1) {
+    if (!entry.isDirectory() || entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue
+    const subPath = path.join(cwd, entry.name)
+    const markers = repoMarkersIn(subPath)
+    if (markers.length > 0) {
+      results.push({ path: `./${entry.name}`, name: entry.name, markers })
+      continue
+    }
+    // 2nd level — useful for monorepo conventions like packages/<name>/
+    let level2: fs.Dirent[]
+    try { level2 = fs.readdirSync(subPath, { withFileTypes: true }) } catch { continue }
+    for (const sub of level2) {
+      if (!sub.isDirectory() || sub.name.startsWith('.') || SKIP_DIRS.has(sub.name)) continue
+      const deepPath = path.join(subPath, sub.name)
+      const deepMarkers = repoMarkersIn(deepPath)
+      if (deepMarkers.length > 0) {
+        results.push({ path: `./${entry.name}/${sub.name}`, name: sub.name, markers: deepMarkers })
+      }
+    }
+  }
+  return results
+}
+
+// Pick a provider the user can use without further setup. Order matches the
+// likely best UX: subscription > API key > local.
+async function detectBestProvider(): Promise<'claude-code' | 'claude' | 'ollama' | null> {
+  if (await isBinaryAvailable('claude', ['--version'])) return 'claude-code'
+  if (process.env.ANTHROPIC_API_KEY) return 'claude'
+  try {
+    const { probeOllama } = await import('@repomap/adapter-ollama')
+    const probe = await probeOllama()
+    if (probe.reachable) return 'ollama'
+  } catch { /* ignore */ }
+  return null
+}
+
+interface BuildConfigInput {
+  repos: Array<{ path: string; name: string; description?: string }>
+  provider: 'claude-code' | 'claude' | 'ollama'
+  model: string
+  baseUrl: string
+  outputPath: string
+  format: 'html' | 'markdown' | 'json'
+  lang: CliLang
+}
+
+function buildConfigYaml(c: BuildConfigInput): string {
+  const lines: string[] = []
+  lines.push('# Generated by `repomap init` — edit freely.')
+  lines.push('')
+  lines.push('repos:')
+  for (const r of c.repos) {
+    lines.push(`  - path: ${r.path}`)
+    lines.push(`    name: ${r.name}`)
+    if (r.description) lines.push(`    description: ${yamlString(r.description)}`)
+  }
+  lines.push('')
+  lines.push('output:')
+  lines.push(`  path: ${c.outputPath}`)
+  lines.push(`  format: ${c.format}`)
+  lines.push('')
+  lines.push('ai:')
+  lines.push(`  provider: ${c.provider}`)
+  if (c.model) lines.push(`  model: ${c.model}`)
+  if (c.provider === 'ollama' && c.baseUrl) lines.push(`  baseUrl: ${c.baseUrl}`)
+  if (c.provider === 'claude-code') lines.push(`  # maxBudgetUsd: 1.00   # safety cap per call`)
+  lines.push('')
+  lines.push(`language: ${c.lang}`)
+  lines.push('watch: false')
+  lines.push('')
+  return lines.join('\n')
+}
+
+// Minimal YAML-safe string escaping: quote if it has special chars or
+// leading/trailing whitespace; otherwise emit bare.
+function yamlString(s: string): string {
+  if (/^[\w .,/()\-]+$/.test(s) && !/^\s|\s$/.test(s)) return s
+  return JSON.stringify(s)
+}
 
 function initTemplate(lang: CliLang): string {
   if (lang === 'es') {

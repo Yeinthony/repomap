@@ -387,6 +387,15 @@ Ejemplo completo en [`examples/github-actions/repomap.yml`](./examples/github-ac
 - [x] Live-reload en `serve`
 - [x] GitHub Action
 - [x] Adaptador para Ollama (local, privado, sin API key)
+- [ ] **`repomap init` interactivo** — reemplazar el template estático actual por un flujo guiado:
+  - Detección automática de repos en `cwd` (busca `.git/`, `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml` 1-2 niveles deep)
+  - Multi-select de cuáles incluir, con toggle para añadir paths manuales
+  - Prompt por: provider AI (default = el que tenga setup válido: `claude` en PATH → `claude-code`; si hay `ANTHROPIC_API_KEY` → `claude`; si Ollama responde → `ollama`), idioma, output dir, formato
+  - Por cada repo: pide `name` (sugiere basename) y `description` opcional
+  - Muestra preview del yaml y confirma antes de escribir
+  - Backward compat: `repomap init --yes` mantiene el comportamiento actual (template estático)
+  - Dep nueva: `@inquirer/prompts` (~30KB, modular, mantenido por npm)
+  - Lift: ~200 líneas en `packages/cli/src/index.ts` reemplazando el bloque `init`
 - [ ] Adaptador para Gemini (usa la integración nativa de graphify)
 - [ ] Sistema de temas
 - [ ] Chat embebido "Pregúntale a los docs"
