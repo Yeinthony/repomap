@@ -8,7 +8,7 @@ import type {
   RepomapConfig,
   GitDiff,
 } from '@repomap/core'
-import { compactForLLM, loadDocsSkill, debugDump } from '@repomap/core'
+import { compactForLLM, loadDocsSkill, debugDump, generateDocsParallel } from '@repomap/core'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLAUDE CODE ADAPTER
@@ -125,6 +125,11 @@ export class ClaudeCodeAdapter implements AIAdapter {
   private model: string
   private binary: string
   private maxBudgetUsd?: number
+  // `claude -p` doesn't expose prompt caching via flags, so parallel sub-calls
+  // would pay full price on every system-prompt round-trip. Stay single by
+  // default; users can override with ai.strategy: parallel if they accept the
+  // higher cost in exchange for lower latency.
+  defaultStrategy: 'parallel' | 'single' = 'single'
 
   constructor(opts: ClaudeCodeAdapterOptions = {}) {
     this.model = opts.model ?? 'sonnet'
@@ -132,7 +137,31 @@ export class ClaudeCodeAdapter implements AIAdapter {
     this.maxBudgetUsd = opts.maxBudgetUsd
   }
 
+  /** Low-level chat primitive for the parallel orchestrator (when opted-in). */
+  async chat(opts: { systemPrompt: string; userPrompt: string; model?: string }): Promise<string> {
+    const raw = await this.runClaude(opts.systemPrompt, opts.userPrompt, opts.model)
+    const env = JSON.parse(raw) as { result?: string; is_error?: boolean; subtype?: string }
+    if (env.is_error || env.subtype === 'error') {
+      throw new Error(`Claude Code returned an error envelope: ${JSON.stringify(env).slice(0, 500)}`)
+    }
+    if (typeof env.result !== 'string') {
+      throw new Error(`Claude Code envelope missing 'result' field`)
+    }
+    return env.result
+  }
+
   async generateDocs(graph: CodeGraph, config: RepomapConfig): Promise<Documentation> {
+    const strategy = config.ai.strategy ?? this.defaultStrategy
+    if (strategy === 'parallel') {
+      return generateDocsParallel(this, graph, config, {
+        modelFast: config.ai.modelFast ?? 'haiku',
+        apiReference: config.ai.apiReference,
+      })
+    }
+    return this.generateDocsSingle(graph, config)
+  }
+
+  private async generateDocsSingle(graph: CodeGraph, config: RepomapConfig): Promise<Documentation> {
     const lang = config.language === 'es' ? 'Spanish' : 'English'
     const compact = compactForLLM(graph)
     const skill = loadDocsSkill()
@@ -218,12 +247,12 @@ Return the COMPLETE updated documentation JSON. Only modify what actually change
 
   // ── Internal ─────────────────────────────────────────────────────────────
 
-  private runClaude(systemPrompt: string, userPrompt: string): Promise<string> {
+  private runClaude(systemPrompt: string, userPrompt: string, modelOverride?: string): Promise<string> {
     const args = [
       '-p',
       '--output-format', 'json',
       '--no-session-persistence',
-      '--model', this.model,
+      '--model', modelOverride ?? this.model,
       '--system-prompt', systemPrompt,
     ]
     if (this.maxBudgetUsd != null) {

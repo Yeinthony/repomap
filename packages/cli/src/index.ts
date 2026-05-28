@@ -381,6 +381,10 @@ program
   .option('--lang <language>', 'Documentation language: en | es (overrides config.language)')
   .option('-v, --verbose', 'Print extra info (adapter, model, paths, repo counts)')
   .option('--debug', 'Dump graph, prompts, raw response to <output>/.repomap-debug/<timestamp>/')
+  .option('--strategy <strategy>', 'parallel | single (default: per-adapter — claude=parallel, others=single)')
+  .option('--with-api-ref', 'Generate API reference per service (adds ~4-5K output tokens/service)')
+  .option('--no-api-ref', 'Force-omit API reference (overrides config.ai.apiReference)')
+  .option('--model-fast <model>', 'Model used for parallel sub-sections (default: haiku for claude)')
   .action(async (options) => {
     const lang = resolveLang(options)
     printBanner()
@@ -1634,6 +1638,18 @@ function loadConfig(options: any): RepomapConfig {
   }
   if (typeof options.model === 'string' && options.model.length > 0) {
     config.ai = { ...(config.ai ?? { provider: 'claude-code' as const }), model: options.model }
+  }
+  if (typeof options.modelFast === 'string' && options.modelFast.length > 0) {
+    config.ai = { ...(config.ai ?? { provider: 'claude-code' as const }), modelFast: options.modelFast }
+  }
+  if (options.strategy === 'parallel' || options.strategy === 'single') {
+    config.ai = { ...(config.ai ?? { provider: 'claude-code' as const }), strategy: options.strategy }
+  }
+  // commander's --with-api-ref / --no-api-ref both set options.apiRef
+  // (boolean), with --no-* setting it to false. Distinguish from "not passed"
+  // by checking explicitly for boolean.
+  if (typeof options.apiRef === 'boolean') {
+    config.ai = { ...(config.ai ?? { provider: 'claude-code' as const }), apiReference: options.apiRef }
   }
   if (options.lang === 'en' || options.lang === 'es') {
     config.language = options.lang

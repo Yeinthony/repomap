@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { AIAdapter, CodeGraph, Documentation, RepomapConfig, GitDiff } from '@repomap/core'
-import { compactForLLM, loadDocsSkill, debugDump } from '@repomap/core'
+import { compactForLLM, loadDocsSkill, debugDump, generateDocsParallel } from '@repomap/core'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLAUDE ADAPTER
@@ -106,12 +106,54 @@ GETTING STARTED GUIDANCE:
 
 export class ClaudeAdapter implements AIAdapter {
   private client: Anthropic
+  // Caching makes per-section parallelism a clear win here.
+  defaultStrategy: 'parallel' | 'single' = 'parallel'
+  private defaultModel = 'claude-sonnet-4-20250514'
+  // Aliases so users can pass 'sonnet' / 'opus' / 'haiku' in config.
+  private modelAliases: Record<string, string> = {
+    sonnet: 'claude-sonnet-4-20250514',
+    opus: 'claude-opus-4-1-20250805',
+    haiku: 'claude-haiku-4-5-20251001',
+  }
 
   constructor(apiKey?: string) {
     this.client = new Anthropic({ apiKey: apiKey ?? process.env.ANTHROPIC_API_KEY })
   }
 
+  /** Low-level chat primitive used by the parallel orchestrator. */
+  async chat(opts: { systemPrompt: string; userPrompt: string; model?: string }): Promise<string> {
+    const model = this.resolveModel(opts.model)
+    const response = await this.client.messages.create({
+      model,
+      max_tokens: 8000,
+      // Single cached block for the whole system prompt — adapters using chat()
+      // are expected to pass a long, stable prefix (skill + schema) followed
+      // by the per-call instructions. The 5-min cache TTL covers a full
+      // generate run with parallel sub-calls.
+      system: [{ type: 'text', text: opts.systemPrompt, cache_control: { type: 'ephemeral' } }] as any,
+      messages: [{ role: 'user', content: opts.userPrompt }],
+    })
+    return response.content.filter((b) => b.type === 'text').map((b) => (b as any).text).join('')
+  }
+
+  private resolveModel(name?: string): string {
+    if (!name) return this.defaultModel
+    return this.modelAliases[name] ?? name
+  }
+
   async generateDocs(graph: CodeGraph, config: RepomapConfig): Promise<Documentation> {
+    const strategy = config.ai.strategy ?? this.defaultStrategy
+    if (strategy === 'parallel') {
+      return generateDocsParallel(this, graph, config, {
+        modelFast: this.resolveModel(config.ai.modelFast ?? 'haiku'),
+        apiReference: config.ai.apiReference,
+      })
+    }
+    return this.generateDocsSingle(graph, config)
+  }
+
+  /** Legacy single-call path. Used when strategy: 'single' is set. */
+  private async generateDocsSingle(graph: CodeGraph, config: RepomapConfig): Promise<Documentation> {
     const lang = config.language === 'es' ? 'Spanish' : 'English'
     const compactRepr = compactForLLM(graph)
 

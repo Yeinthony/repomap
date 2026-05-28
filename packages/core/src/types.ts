@@ -26,10 +26,21 @@ export interface OutputConfig {
 export interface AIConfig {
   provider: 'claude' | 'claude-code' | 'openai' | 'ollama' | 'gemini'
   model?: string
+  /** Secondary model used by the parallel orchestrator for cheap sub-sections
+   *  (service pages, getting-started). Default: a "fast" model alias picked
+   *  per provider (claude → 'haiku'). Override to keep a single model. */
+  modelFast?: string
   apiKey?: string
   baseUrl?: string
   binary?: string         // path override for claude-code provider
   maxBudgetUsd?: number   // safety cap for claude-code provider
+  /** Generate the symbol-level API reference section in service pages.
+   *  Default false: omits ~4-5K output tokens per service. Turn on with
+   *  --with-api-ref for library/SDK repos that need it. */
+  apiReference?: boolean
+  /** Strategy override. Each adapter has a sensible default
+   *  (claude: parallel, claude-code/ollama: single). */
+  strategy?: 'parallel' | 'single'
 }
 
 // ── Graphify graph (raw output from `graphify` CLI) ──────────────────────────
@@ -304,6 +315,21 @@ export interface AIAdapter {
     diff: GitDiff,
     config: RepomapConfig
   ): Promise<Documentation>
+  /** Low-level primitive: send a system+user prompt, return raw assistant
+   *  text. The parallel orchestrator (`generateDocsParallel`) uses this to
+   *  fire multiple focused sub-calls. Adapters that opt-in to parallel must
+   *  implement this; adapters that stay single-call can leave it undefined. */
+  chat?(opts: ChatOpts): Promise<string>
+  /** Default strategy for `generateDocs`. Adapters with prompt caching
+   *  benefit from 'parallel'; cacheless adapters should stay 'single'. */
+  defaultStrategy?: 'parallel' | 'single'
+}
+
+export interface ChatOpts {
+  systemPrompt: string
+  userPrompt: string
+  /** Per-call model override (e.g. 'haiku' for cheap sub-sections). */
+  model?: string
 }
 
 export interface GitDiff {

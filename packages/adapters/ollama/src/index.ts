@@ -5,7 +5,7 @@ import type {
   RepomapConfig,
   GitDiff,
 } from '@repomap/core'
-import { compactForLLM, loadDocsSkill, debugDump } from '@repomap/core'
+import { compactForLLM, loadDocsSkill, debugDump, generateDocsParallel } from '@repomap/core'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OLLAMA ADAPTER
@@ -82,6 +82,8 @@ export class OllamaAdapter implements AIAdapter {
   private baseUrl: string
   private contextWindow: number
   private temperature: number
+  // Single local model = no concurrency win from parallel calls. Stay single.
+  defaultStrategy: 'parallel' | 'single' = 'single'
 
   constructor(opts: OllamaAdapterOptions = {}) {
     this.model = opts.model ?? DEFAULT_MODEL
@@ -90,7 +92,30 @@ export class OllamaAdapter implements AIAdapter {
     this.temperature = opts.temperature ?? DEFAULT_TEMPERATURE
   }
 
+  /** Low-level chat primitive for parallel orchestration (opt-in). */
+  async chat(opts: { systemPrompt: string; userPrompt: string; model?: string }): Promise<string> {
+    const savedModel = this.model
+    if (opts.model) this.model = opts.model
+    try {
+      const raw = await this.chatRaw(opts.systemPrompt, opts.userPrompt)
+      return raw.message?.content ?? ''
+    } finally {
+      this.model = savedModel
+    }
+  }
+
   async generateDocs(graph: CodeGraph, config: RepomapConfig): Promise<Documentation> {
+    const strategy = config.ai.strategy ?? this.defaultStrategy
+    if (strategy === 'parallel') {
+      return generateDocsParallel(this, graph, config, {
+        modelFast: config.ai.modelFast,
+        apiReference: config.ai.apiReference,
+      })
+    }
+    return this.generateDocsSingle(graph, config)
+  }
+
+  private async generateDocsSingle(graph: CodeGraph, config: RepomapConfig): Promise<Documentation> {
     const lang = config.language === 'es' ? 'Spanish' : 'English'
     const compact = compactForLLM(graph)
     const skill = loadDocsSkill()
@@ -128,7 +153,7 @@ Generate documentation following the JSON schema defined in the system prompt. O
       compactChars: compact.length,
     }, null, 2))
 
-    const raw = await this.chat(systemPrompt, userPrompt)
+    const raw = await this.chatRaw(systemPrompt, userPrompt)
     debugDump('llm-raw-response.json', JSON.stringify(raw, null, 2))
 
     const text = raw.message?.content ?? ''
@@ -175,14 +200,14 @@ ${JSON.stringify(existing)}
 
 Return the COMPLETE updated documentation JSON. Only modify what actually changed; keep everything else identical.`
 
-    const raw = await this.chat(systemPrompt, userPrompt)
+    const raw = await this.chatRaw(systemPrompt, userPrompt)
     const text = raw.message?.content ?? ''
     return JSON.parse(stripJsonFences(text)) as Documentation
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────
 
-  private async chat(systemPrompt: string, userPrompt: string): Promise<OllamaChatResponse> {
+  private async chatRaw(systemPrompt: string, userPrompt: string): Promise<OllamaChatResponse> {
     const url = `${this.baseUrl}/api/chat`
     const body = {
       model: this.model,
