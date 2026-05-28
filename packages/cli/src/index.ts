@@ -71,6 +71,7 @@ const cliDict = {
     initFoundN: (n: number) => `Found ${n} candidate repos.`,
     initFoundNone: 'No repo-shaped directories found here. You can add paths manually.',
     initSelectRepos: 'Select repos to document (space to toggle, enter to confirm)',
+    initSelectReposHelp: '(Space to toggle · A to toggle all · I to invert · Enter to confirm)',
     initSelectAtLeastOne: 'Select at least one repo (or quit and add manually).',
     initAddManual: 'Add another repo by typing its path?',
     initAddManualPath: 'Repo path (relative or absolute, blank to finish)',
@@ -228,6 +229,7 @@ const cliDict = {
     initFoundN: (n: number) => `Encontré ${n} candidatos.`,
     initFoundNone: 'No encontré repos por aquí. Puedes añadir paths a mano.',
     initSelectRepos: 'Elige los repos a documentar (espacio para marcar, enter para confirmar)',
+    initSelectReposHelp: '(Espacio para marcar · A para todos · I para invertir · Enter para confirmar)',
     initSelectAtLeastOne: 'Marca al menos uno (o sal y añade a mano).',
     initAddManual: '¿Añadir otro repo escribiendo el path?',
     initAddManualPath: 'Path del repo (relativo o absoluto, vacío para terminar)',
@@ -1355,6 +1357,7 @@ async function runInteractiveInit(configPath: string, explicitLang?: CliLang): P
       { value: 'es' as CliLang, name: tCli(startingLang, 'initLangEs') },
     ],
     default: 'en' as CliLang,
+    theme: { helpMode: 'never' },
   }))
 
   // 2. Detect repo candidates
@@ -1371,6 +1374,8 @@ async function runInteractiveInit(configPath: string, explicitLang?: CliLang): P
   if (candidates.length > 0) {
     selectedPaths = await checkbox({
       message: tCli(lang, 'initSelectRepos'),
+      // Override the library's English hint with our localized version.
+      instructions: ' ' + tCli(lang, 'initSelectReposHelp'),
       choices: candidates.map((c) => ({
         value: c.path,
         name: `${c.path}  ${chalk.dim('(' + c.markers.join(', ') + ')')}`,
@@ -1429,6 +1434,7 @@ async function runInteractiveInit(configPath: string, explicitLang?: CliLang): P
       { value: 'ollama' as const, name: tCli(lang, 'initProviderOllama') },
     ],
     default: detected ?? 'claude-code',
+    theme: { helpMode: 'never' },
   })
 
   // 7. Provider-specific extras
@@ -1459,6 +1465,7 @@ async function runInteractiveInit(configPath: string, explicitLang?: CliLang): P
       { value: 'json' as const, name: tCli(lang, 'initFormatJson') },
     ],
     default: 'html' as const,
+    theme: { helpMode: 'never' },
   })
 
   // 9. Build + preview + confirm
