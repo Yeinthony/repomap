@@ -1,8 +1,39 @@
 # repomap
 
+[![npm version](https://img.shields.io/npm/v/@repomap/cli.svg)](https://www.npmjs.com/package/@repomap/cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Node.js >=18](https://img.shields.io/badge/node-%E2%89%A518-brightgreen)](https://nodejs.org)
+[![GitHub Action](https://img.shields.io/badge/GitHub%20Action-ready-blue?logo=githubactions&logoColor=white)](./action.yml)
+
 **Generador de documentación impulsado por IA para proyectos multi-repo.**
 
-Apunta repomap a tus repos, espera 2-3 minutos, obtienes un sitio HTML de calidad framework: overview, página por servicio, integraciones, grafo interactivo y diagramas con pan/zoom.
+Apunta repomap a tus repos, espera 2–5 minutos, y obtienes un sitio HTML de calidad framework: overview, página por servicio, integraciones, grafo interactivo y diagramas con pan/zoom.
+
+> El código nunca se envía completo al LLM: solo el grafo estructural (~5% del tamaño real).
+
+---
+
+## Tabla de contenido
+
+- [Qué hace](#qué-hace)
+- [Quickstart](#quickstart)
+- [Prerequisitos](#prerequisitos)
+- [Instalación](#instalación)
+- [Uso paso a paso](#uso-paso-a-paso)
+- [Comandos](#comandos)
+- [Configuración (`repomap.config.yml`)](#configuración-repomapconfigyml)
+- [Iterar sin volver a llamar al LLM](#iterar-sin-volver-a-llamar-al-llm)
+- [Auto-actualización (watch + hooks)](#auto-actualización-watch--hooks)
+- [Salida](#salida)
+- [Detectores](#detectores-qué-identifica-repomap)
+- [Coste y rendimiento](#coste-y-rendimiento)
+- [GitHub Action](#github-action)
+- [Cómo funciona internamente](#cómo-funciona-internamente-resumen-técnico)
+- [Arquitectura del repo](#arquitectura-del-repo)
+- [Troubleshooting](#troubleshooting)
+- [Roadmap](#roadmap)
+- [Contribuir](#contribuir)
+- [Licencia](#licencia)
 
 ---
 
@@ -10,9 +41,33 @@ Apunta repomap a tus repos, espera 2-3 minutos, obtienes un sitio HTML de calida
 
 Te incorporas a un proyecto nuevo. 5 servicios, 3 equipos, cero documentación. Te pasas semanas haciendo ingeniería inversa de cómo se conecta todo.
 
-**repomap lo resuelve.** Analiza tus repos localmente con AST (vía [graphify](https://github.com/anthropics/graphify-y)), detecta llamadas HTTP entre servicios (`fetch`, `axios`, env vars `*_SERVICE_URL`, `docker-compose.yml`), construye un grafo cross-repo y le pasa solo el esqueleto a Claude para que escriba la prosa, los ejemplos y las analogías.
+**repomap lo resuelve.** Analiza tus repos localmente con AST (vía [graphify](https://github.com/Yeinthony/graphify-y)), detecta llamadas HTTP entre servicios (`fetch`, `axios`, env vars `*_SERVICE_URL`, `docker-compose.yml`), construye un grafo cross-repo y le pasa solo el esqueleto a un LLM (Claude o Ollama) para que escriba la prosa, los ejemplos y las analogías.
 
-El código nunca se envía completo: solo el grafo estructural (~5% del tamaño real).
+---
+
+## Quickstart
+
+```bash
+# 1. Instala el CLI
+npm install -g @repomap/cli
+
+# 2. Instala el motor de análisis estructural
+pipx install graphifyy    # o: uv tool install graphifyy
+
+# 3. Ve a la carpeta que contiene tus repos
+cd ~/workspaces/mi-plataforma
+
+# 4. Inicializa interactivamente (detecta tus repos automáticamente)
+repomap init
+
+# 5. Genera la documentación
+repomap generate
+
+# 6. Ábrela en el navegador
+repomap serve
+```
+
+¿Algo falla? Corre `repomap doctor` para un diagnóstico completo.
 
 ---
 
@@ -31,12 +86,12 @@ Necesitas tres cosas en tu máquina antes de empezar:
    - **Claude Code instalado y autenticado** (recomendado — usa tu suscripción Pro/Max, no requiere API key)
      - Descarga: <https://claude.com/code>
      - Verifica con `claude --version`
-   - **API key de Anthropic** (alternativa para CI/CD)
+   - **API key de Anthropic** (recomendado para CI/CD — habilita generación paralela con prompt caching)
      - Obtén la key en <https://console.anthropic.com/settings/keys>
      - Exporta: `export ANTHROPIC_API_KEY="sk-ant-..."`
-   - **Ollama local** (privado, sin API key, $0 cost — para código sensible o entornos air-gapped)
+   - **Ollama local** (privado, sin API key, $0 de coste — para código sensible o entornos air-gapped)
      - Instala: `brew install ollama` o desde <https://ollama.com/download>
-     - Pull un modelo: `ollama pull qwen2.5-coder:7b`
+     - Pull de un modelo: `ollama pull qwen2.5-coder:7b`
      - Calidad de prosa por debajo de Sonnet/Opus pero suficiente para overviews y referencia
 
 ---
@@ -58,12 +113,12 @@ git clone https://github.com/Yeinthony/repomap.git
 cd repomap
 npm install
 npm run build
-npm link            # registra `repomap` globalmente apuntando al checkout
+npm link -w @repomap/cli   # registra `repomap` globalmente apuntando al checkout
 ```
 
 ---
 
-## Flujo paso a paso
+## Uso paso a paso
 
 ### 1. Posiciónate en una carpeta padre
 
@@ -87,11 +142,18 @@ cd ~/workspaces/mi-plataforma
 repomap init
 ```
 
-Esto crea `repomap.config.yml` con una plantilla comentada.
+Por defecto el flujo es **interactivo**:
 
-### 3. Edita `repomap.config.yml`
+- Detecta automáticamente los repos en `cwd` (busca `.git/`, `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, etc. 1–2 niveles deep)
+- Te deja seleccionar cuáles incluir y añadir paths manuales
+- Sniff del provider AI: probe real de `claude` en PATH → `claude-code`; probe de `ANTHROPIC_API_KEY` → `claude`; probe de Ollama local → `ollama`
+- Selector de modelo provider-aware (lista los modelos realmente disponibles, sin defaults inventados)
+- Por cada repo: pide `name` (sugiere basename) y `description` opcional
+- Muestra preview del YAML y confirma antes de escribir
 
-Apunta cada `path` a la raíz de un repo. El `name` es como aparecerá en la documentación.
+¿Prefieres el template estático con placeholders? `repomap init --yes`.
+
+### 3. Revisa `repomap.config.yml`
 
 ```yaml
 repos:
@@ -109,12 +171,12 @@ repos:
     description: SPA del cliente
 
 output:
-  path: ./docs            # dónde se escribirá el sitio
+  path: ./repomap-docs    # dónde se escribirá el sitio
   format: html            # html | markdown | json
 
 ai:
-  provider: claude-code   # usa tu Claude Code local. Alt: 'claude' con ANTHROPIC_API_KEY
-  model: sonnet           # 'sonnet' (rápido) | 'opus' (mejor calidad, más caro)
+  provider: claude-code   # claude-code | claude | ollama
+  model: sonnet           # 'sonnet' (rápido) | 'opus' (mejor calidad)
   maxBudgetUsd: 1.00      # tope de gasto por llamada (solo claude-code)
 
 language: es              # 'es' | 'en'
@@ -127,24 +189,27 @@ watch: false              # cambia a true para auto-update en cambios de código
 repomap generate
 ```
 
-Esto tarda **2-5 minutos** dependiendo del tamaño de los repos. Verás un spinner con feedback en tiempo real:
+Tarda **2–5 minutos** dependiendo del tamaño de los repos y del provider/strategy. Verás progreso en tiempo real (con `listr2` cuando va paralelo):
 
 ```
 ✔ Grafo construido: 307 nodos · 431 edges · 4 HTTP relations
-⠋ Esperando respuesta del modelo… 1m 24s
-✔ Documentación recibida en 2m 47s
-✔ Listo
-  Output: /Users/yo/workspaces/mi-plataforma/docs
+⠋ overview          ▶ corriendo  · sonnet
+✔ getting-started   ✔ 18s        · haiku
+✔ integrations      ✔ 22s        · haiku
+✔ service: auth     ✔ 14s        · haiku
+✔ service: payments ✔ 17s        · haiku
+✔ Documentación recibida en 2m 47s · $0.18
+  Output: /Users/yo/workspaces/mi-plataforma/repomap-docs
 ```
 
 **Qué ocurre internamente:**
 
 1. Para cada repo: `graphify pipeline.py` extrae AST (sin LLM, segundos)
 2. `graphify merge-graphs` fusiona los grafos en uno cross-repo
-3. Detectores estáticos buscan llamadas HTTP entre servicios (`fetch('http://payments/...')`, `PAYMENTS_SERVICE_URL`, etc.)
+3. Detectores estáticos buscan llamadas HTTP entre servicios (`fetch('http://payments/...')`, `PAYMENTS_SERVICE_URL`, `docker-compose.yml`, etc.)
 4. Solo el esqueleto resultante (~5% de tu código real) se envía al LLM
-5. Claude genera overview, página por servicio, integraciones, analogías y diagramas Mermaid
-6. Se escribe el sitio HTML
+5. Según el adapter, una sola llamada (`single`) o varias en paralelo con prompt caching (`parallel`, ver [Coste y rendimiento](#coste-y-rendimiento))
+6. Se escribe el sitio HTML/Markdown/JSON
 
 ### 5. Abre la documentación
 
@@ -152,44 +217,95 @@ Esto tarda **2-5 minutos** dependiendo del tamaño de los repos. Verás un spinn
 repomap serve
 ```
 
-Arranca un server local en <http://localhost:4040> y abre el browser automáticamente. Ctrl+C para parar.
+Arranca un server local en <http://localhost:4040> con live-reload y abre el browser automáticamente. Ctrl+C para parar.
+
+Banderas útiles:
+- `--port 9090` — otro puerto
+- `--host 0.0.0.0` — exponer a la LAN (avisa con warning explícito)
+- `--no-open` — no abre el browser
+- `--no-reload` — desactiva live-reload
 
 ---
 
-## Comandos disponibles
+## Comandos
 
 | Comando | Qué hace | Llama al LLM |
 |---------|----------|:-:|
-| `repomap init` | Crea `repomap.config.yml` con plantilla | ❌ |
-| `repomap generate` | Pipeline completo: analizar + LLM + escribir HTML | ✅ |
-| `repomap render` | Solo regenera HTML desde el cache (`./docs/data/knowledge.json`). Útil para iterar diseño sin gastar tokens. | ❌ |
-| `repomap watch` | Vigila cambios de archivos y actualiza solo lo afectado (incremental, AST puro para code, LLM solo si hay cambios semánticos) | ✅ parcial |
-| `repomap serve` | Server HTTP local + abre browser | ❌ |
+| `repomap init` | Init interactivo (detección de repos + sniff de provider). `--yes` para template estático | ❌ |
+| `repomap generate` | Pipeline completo: analizar + LLM + escribir output | ✅ |
+| `repomap render` | Solo regenera HTML desde el cache (`./repomap-docs/data/knowledge.json`). Útil para iterar diseño sin gastar tokens | ❌ |
+| `repomap watch` | Vigila cambios de archivos y actualiza solo lo afectado | ✅ parcial |
+| `repomap serve` | Server HTTP local + live-reload + abre browser | ❌ |
+| `repomap doctor` | Diagnóstico completo: Node, graphify, config, repos, AI provider, output dir | ❌ |
+| `repomap clean` | Borra caches generados (`data/`, `graphify/`, `.repomap-debug/`). `--all` para el sitio completo | ❌ |
+| `repomap status` | Resumen del workspace: config, repos, last generate, tamaño del cache, debug dumps | ❌ |
+| `repomap hooks install` | Instala `post-merge` git hook en cada repo del config para auto-regenerar | ❌ |
+| `repomap hooks uninstall` | Quita los hooks instalados por repomap | ❌ |
+| `repomap hooks status` | Muestra qué repos tienen el hook instalado | ❌ |
 
-Banderas globales útiles:
-- `--config <ruta>` — usar un yml en otra ruta
-- `--repos <p1> <p2>` — saltarse el yml y pasar repos por flag
+### Banderas globales útiles
+
+- `-c, --config <ruta>` — usar un yml en otra ruta
+- `-r, --repos <p1> <p2>` — saltarse el yml y pasar repos por flag
 - `--lang es|en` — sobrescribir idioma
+- `-v, --verbose` — info extra (adapter, model, paths)
+- `--debug` — dumpea grafo, prompts y respuesta cruda a `<output>/.repomap-debug/<timestamp>/`
+- `--strategy parallel|single` — fuerza la estrategia del adapter
+- `--with-api-ref` / `--no-api-ref` — incluye/omite la sección "API reference" por servicio (~4–5K output tokens/servicio)
+- `--model-fast <modelo>` — modelo usado para sub-secciones paralelas (default: `haiku` con Claude)
 
 ---
 
-## Iterar diseño/textos sin volver a llamar al LLM
+## Configuración (`repomap.config.yml`)
 
-Después del primer `generate`, queda cacheado todo en `./docs/data/knowledge.json`. Si solo cambia el **diseño** (CSS, plantillas HTML, traducciones), no hace falta pagar otro LLM call:
+Esquema completo, todos los campos opcionales salvo `repos`, `output` y `ai`:
+
+```yaml
+repos:
+  - path: ./service-a       # ruta al repo (relativa o absoluta)
+    name: service-a         # nombre corto, aparece en la sidebar
+    description: ...        # opcional, hint extra para el LLM
+
+output:
+  path: ./repomap-docs      # directorio destino
+  format: html              # html | markdown | json
+
+ai:
+  provider: claude-code     # claude-code | claude | ollama
+  model: sonnet             # alias 'sonnet'/'opus'/'haiku' o ID completo
+  modelFast: haiku          # modelo barato para sub-secciones paralelas (default per provider)
+  apiKey: <opcional>        # solo para provider 'claude' (alternativa a ANTHROPIC_API_KEY)
+  baseUrl: <opcional>       # solo para provider 'ollama' (default: http://localhost:11434)
+  binary: claude            # solo claude-code: ruta al binario si no está en PATH
+  maxBudgetUsd: 1.00        # solo claude-code: tope de gasto por llamada
+  apiReference: false       # incluye sección "API reference" en cada servicio (default: false)
+  strategy: parallel        # parallel | single (default per adapter)
+
+language: es                # idioma de la doc generada: en | es
+watch: false                # si true, `generate` queda en modo watch al terminar
+```
+
+Las flags de la CLI tienen precedencia sobre los valores del yml.
+
+---
+
+## Iterar sin volver a llamar al LLM
+
+Después del primer `generate`, queda cacheado todo en `./repomap-docs/data/knowledge.json`. Si solo cambia el **diseño** (CSS, plantillas HTML, traducciones), no hace falta pagar otro LLM call:
 
 ```bash
 repomap render
 ```
 
-Esto regenera todas las páginas HTML desde el cache en <1 segundo. Recarga el browser (Cmd+Shift+R en macOS) y listo.
+Regenera todas las páginas HTML desde el cache en <1 segundo. Recarga el browser (Cmd+Shift+R) y listo.
 
 Solo necesitas `generate` cuando cambia el **código** de los repos analizados.
 
 ---
 
-## Auto-actualización (watch mode)
+## Auto-actualización (watch + hooks)
 
-Para que la doc se regenere cuando cambies código en cualquiera de los repos vigilados:
+### Watch mode
 
 ```bash
 repomap watch
@@ -197,46 +313,30 @@ repomap watch
 
 Detecta el archivo modificado, vuelve a correr graphify en modo incremental (solo AST, gratis), pide al LLM que actualice **solo la sección afectada** (no toda la doc) y reescribe el HTML.
 
-Para integrar con git hooks:
+Flags útiles:
+- `--debounce 1500` — ms de espera tras el último cambio antes de regenerar
+- `--ignore "pattern" ...` — patrones extra para ignorar (chokidar globs). Se añaden a los defaults: `node_modules`, `.git`, `dist`, `build`, `graphify-out`
+
+### Git hooks (post-merge)
+
+Para regenerar la doc automáticamente cuando hagas `git pull`/`merge` en cualquiera de los repos vigilados:
 
 ```bash
-# .git/hooks/post-merge
-#!/bin/sh
-cd /ruta/a/tu/workspace && repomap generate
+repomap hooks install      # instala post-merge en cada repo del config
+repomap hooks status       # muestra qué repos tienen el hook
+repomap hooks uninstall    # los quita
 ```
 
----
-
-## Configuración (`repomap.config.yml`) completa
-
-```yaml
-repos:
-  - path: ./service-a    # ruta al repo (relativa o absoluta)
-    name: service-a      # nombre corto, así aparece en la sidebar
-    description: ...     # opcional, hint extra para el LLM
-
-output:
-  path: ./docs           # directorio destino
-  format: html           # html | markdown | json
-
-ai:
-  provider: claude-code  # claude-code | claude
-  model: sonnet          # alias 'sonnet'/'opus' o ID completo
-  apiKey: <opcional>     # solo para provider 'claude' (alternativa a env var)
-  binary: claude         # solo claude-code: ruta al binario si no está en PATH
-  maxBudgetUsd: 1.00     # solo claude-code: tope de gasto por llamada
-
-language: es             # idioma de la doc generada
-watch: false             # si true, `generate` queda en modo watch al terminar
-```
+`hooks install --force` sobrescribe hooks no instalados por repomap (pide confirmación).
 
 ---
 
 ## Salida
 
 ```
-docs/
+repomap-docs/
 ├── index.html                       overview, arquitectura, analogía
+├── getting-started/index.html       tutorial + troubleshooting
 ├── integrations/index.html          conexiones HTTP detectadas, flujos, grafo
 ├── <service-a>/index.html           página por servicio
 ├── <service-b>/index.html
@@ -250,12 +350,16 @@ docs/
 Cada página tiene:
 - **Sidebar izquierdo** con servicios
 - **Contenido** con secciones h2/h3
-- **TOC derecho** "En esta página" con anchors a cada sección y scroll-spy
+- **TOC derecho** "En esta página" con anchors y scroll-spy (solo ≥1280px)
 - **Diagramas Mermaid** con botón "Expandir" → modal fullscreen con pan/zoom
 - **Bloques de código** con syntax highlighting y botón "Copiar"
 - **Tree de archivos** del servicio
 
 > **Tus repos quedan intactos.** repomap no escribe nada dentro de los repos analizados — todo el cache, grafos y outputs viven bajo `output.path`. Solo añade `repomap-docs/` (o el path que hayas elegido) al `.gitignore` del directorio donde corres repomap.
+
+### Formato Markdown
+
+Con `output.format: markdown`, repomap escribe README + integrations + página por servicio + getting-started en `.md` plano, compatible con Notion, Obsidian, GitBook y MkDocs.
 
 ---
 
@@ -265,7 +369,7 @@ Cada página tiene:
 |------------|------|
 | Endpoints HTTP por servicio | regex sobre Express/Fastify/NestJS/Flask/FastAPI |
 | Eventos publicados | `.emit/.publish/.send('event-name', ...)` |
-| Variables de entorno con URLs | parsing de `.env*` files |
+| Variables de entorno con URLs | parsing de `.env*` |
 | Mapeos servicio↔host | `docker-compose.yml` (services + environment) |
 | Llamadas HTTP entre servicios | `fetch`, `axios`, `got`, `ky`, `requests`, `httpx` con URL literal o `${SERVICE_URL}` |
 | Estructura de carpetas | filesystem walk filtrado |
@@ -273,40 +377,53 @@ Cada página tiene:
 | Comunidades / clusters | algoritmo de graphify sobre el grafo merged |
 
 Para que las conexiones HTTP se detecten bien, conviene que:
-- Los servicios se llamen entre sí con URLs que contengan el nombre del servicio (`http://payments/...`) **o**
+
+- Los servicios se llamen entre sí con URLs que contengan el nombre del servicio (`http://payments/...`), **o**
 - Las URLs vengan de env vars con convención `<NOMBRE>_SERVICE_URL` / `<NOMBRE>_URL` / `<NOMBRE>_API_URL`
 - Si usas `docker-compose.yml`, el `name` del repo en `repomap.config.yml` idealmente coincide con el nombre del servicio en compose
 
 ---
 
-## Troubleshooting
+## Coste y rendimiento
 
-**`'graphify' CLI not found on PATH`**
-→ No instalaste graphify, o tu shell no lo encuentra. `pipx install graphifyy` y verifica con `which graphify`.
+**Por qué es barato en tokens:** la extracción AST + la detección estática son 100% Python/Node sin LLM. El LLM solo recibe un resumen estructural compacto (~5–15K tokens de input) y devuelve la documentación (~5–10K tokens de output).
 
-**`'claude' (Claude Code CLI) not found on PATH`** (al usar `provider: claude-code`)
-→ Instala Claude Code desde <https://claude.com/code> y autentícate con `claude auth`.
+### Estrategias de generación
 
-**`You've hit your limit · resets HH:MMpm`** durante `generate`
-→ Tu cuota de Claude Code se agotó. Espera al reset o cambia temporalmente a `provider: claude` con `ANTHROPIC_API_KEY`.
+| Strategy | Cuándo se usa | Comportamiento |
+|----------|---------------|----------------|
+| `parallel` | Default en `claude` (API). Aprovecha prompt caching | Lanza la sección "overview" con el modelo principal y dispara servicios + getting-started + integrations en paralelo con un modelo barato (`modelFast`, default `haiku`) |
+| `single` | Default en `claude-code` y `ollama` | Una sola llamada que devuelve toda la doc JSON |
 
-**El HTML no cambia después de editar templates**
-→ Cache del browser. Cmd+Shift+R (hard reload) en macOS.
+Por defecto la API reference por servicio está **off** (`apiReference: false`) — ahorra ~4–5K output tokens/servicio. Actívala con `--with-api-ref` para repos que son librerías/SDK públicos.
 
-**El TOC derecho ("En esta página") no aparece**
-→ Solo se muestra en ventanas ≥1280px. Pantallas más chicas usan layout 2 columnas.
+### Coste típico
 
-**Las conexiones HTTP detectadas son 0**
-→ Tus servicios no se llaman por URL/env-var con convenciones reconocidas. Considera:
-- Añadir `docker-compose.yml` con `services:` definidas
-- O usar env vars `<NOMBRE_SERVICIO>_SERVICE_URL`
-- O las llamadas son con código generado dinámicamente — repomap solo capta strings literales
+| Setup | Coste por `generate` | Notas |
+|------|---------------------|-------|
+| `claude-code` + Pro/Max | $0 (incluido en la suscripción) | Tope `maxBudgetUsd` configurable |
+| `claude` API, sonnet single | $0.05–$0.30 | Para repos pequeños/medianos |
+| `claude` API, sonnet+haiku parallel | $0.10–$0.50 | Más rápido y con mejor cache hit en re-runs |
+| `ollama` (local) | $0 | Sin red, sin API key, calidad por debajo de Sonnet |
 
-**Los archivos compilados (`.js`, `.d.ts`) aparecen en el tree de un servicio TS**
-→ Hay artefactos de build sueltos en `src/`. Limpia con:
-```bash
-find <repo>/src -name '*.d.ts' -o -name '*.js' -o -name '*.js.map' | xargs rm
+---
+
+## GitHub Action
+
+Para correr repomap en CI y mantener la doc al día sin trabajo manual:
+
+```yaml
+- uses: Yeinthony/repomap@v1
+  with:
+    config-path: repomap.config.yml
+    output-path: ./repomap-docs
+    ai-provider: claude
+    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
+
+La action instala Node, Python, graphify y `@repomap/cli`, corre `repomap doctor` como verificación y luego `repomap generate` con los flags que pases.
+
+Ejemplo completo en [`examples/github-actions/repomap.yml`](./examples/github-actions/repomap.yml) — incluye tres opciones para qué hacer con el output: commit-back al mismo branch, abrir PR para review, o publicar en GitHub Pages.
 
 ---
 
@@ -333,7 +450,9 @@ find <repo>/src -name '*.d.ts' -o -name '*.js' -o -name '*.js.map' | xargs rm
         compactForLLM (resumen tokens-eficiente)
                  │
                  ▼
-        adapter (claude-code | claude)
+   adapter (claude-code | claude | ollama)
+   ├─ strategy: single  → 1 llamada
+   └─ strategy: parallel → overview (sonnet) + N sub-llamadas (haiku) con prompt caching
                  │
                  ▼
         Documentation JSON
@@ -342,66 +461,113 @@ find <repo>/src -name '*.d.ts' -o -name '*.js' -o -name '*.js.map' | xargs rm
         HTML / Markdown / JSON
 ```
 
-**Por qué es barato en tokens:** la extracción AST + detección estática es 100% Python/Node sin LLM. El LLM solo recibe un resumen estructural compacto (~5-15K tokens de input) y devuelve la documentación (~5-10K tokens de output). Una corrida típica cuesta $0.05-0.30 con Sonnet.
-
 ---
 
-## GitHub Action
+## Arquitectura del repo
 
-Para correr repomap en CI y mantener la doc al día sin trabajo manual:
+Monorepo con [npm workspaces](https://docs.npmjs.com/cli/v10/using-npm/workspaces):
 
-```yaml
-- uses: Yeinthony/repomap@v1
-  with:
-    config-path: repomap.config.yml
-    output-path: ./repomap-docs
-    ai-provider: claude
-    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+packages/
+├── core/                       # @repomap/core — orquestador, graphify, detectores, render
+├── cli/                        # @repomap/cli  — comandos, prompts interactivos
+└── adapters/
+    ├── claude/                 # @repomap/adapter-claude       — Anthropic SDK + ANTHROPIC_API_KEY
+    ├── claude-code/            # @repomap/adapter-claude-code  — usa el binario local `claude`
+    └── ollama/                 # @repomap/adapter-ollama        — server local Ollama, $0
 ```
 
-La action instala Node, Python, graphify y `@repomap/cli`, corre `repomap doctor` como verificación, y luego `repomap generate` con los flags que pases.
-
-Ejemplo completo en [`examples/github-actions/repomap.yml`](./examples/github-actions/repomap.yml) — incluye tres opciones para qué hacer con el output: commit-back al mismo branch, abrir PR para review, o publicar en GitHub Pages.
-
----
-
-## Stack del propio repomap
+### Stack
 
 - **TypeScript** (ESM, NodeNext)
-- **Monorepo** npm workspaces: `@repomap/core`, `@repomap/cli`, `@repomap/adapter-claude`, `@repomap/adapter-claude-code`
+- **CLI**: `commander`, `@inquirer/prompts`, `listr2`, `chalk`, `ora`
 - **Pipeline graphify** invocado vía `python -m` (interpreter discovery automático)
-- **HTML generado** con templates inline, sin framework; Mermaid + highlight.js desde CDN
-- **Sin runtime extra**: el sitio generado es HTML estático, servible desde cualquier lado
+- **HTML generado** con templates inline, sin framework; Mermaid + highlight.js + vis.js desde CDN
+- **Sin runtime extra**: el sitio generado es HTML estático, servible desde cualquier hosting
+
+### Scripts del workspace
+
+```bash
+npm run build         # build de todos los packages en orden
+npm run dev           # tsx watch sobre packages/cli
+npm test              # jest
+npm run pack:dry      # npm pack --dry-run para verificar el publish
+npm run publish:all   # publica los 5 paquetes (requiere npm login)
+```
 
 ---
 
-## Hoja de ruta
+## Troubleshooting
+
+**`'graphify' CLI not found on PATH`**
+→ No instalaste graphify, o tu shell no lo encuentra. `pipx install graphifyy` y verifica con `which graphify`.
+
+**`'claude' (Claude Code CLI) not found on PATH`** (al usar `provider: claude-code`)
+→ Instala Claude Code desde <https://claude.com/code> y autentícate con `claude auth`.
+
+**`You've hit your limit · resets HH:MMpm`** durante `generate`
+→ Tu cuota de Claude Code se agotó. Espera al reset o cambia temporalmente a `provider: claude` con `ANTHROPIC_API_KEY`.
+
+**El HTML no cambia después de editar templates**
+→ Cache del browser. Cmd+Shift+R (hard reload) en macOS.
+
+**El TOC derecho ("En esta página") no aparece**
+→ Solo se muestra en ventanas ≥1280px. Pantallas más chicas usan layout 2 columnas.
+
+**Las conexiones HTTP detectadas son 0**
+→ Tus servicios no se llaman por URL/env-var con convenciones reconocidas. Considera:
+- Añadir `docker-compose.yml` con `services:` definidas
+- O usar env vars `<NOMBRE_SERVICIO>_SERVICE_URL`
+- Las llamadas con strings construidos dinámicamente no se detectan — repomap solo capta literales
+
+**Los archivos compilados (`.js`, `.d.ts`) aparecen en el tree de un servicio TS**
+→ Hay artefactos de build sueltos en `src/`. Limpia con:
+```bash
+find <repo>/src -name '*.d.ts' -o -name '*.js' -o -name '*.js.map' | xargs rm
+```
+
+**Para diagnóstico completo:** `repomap doctor` valida Node, graphify, config, repos, AI provider, output dir y reporta cada problema con su fix.
+
+---
+
+## Roadmap
 
 - [x] Parser principal (TS/JS, Python, Go, Java, Ruby vía graphify AST)
 - [x] Adaptador para Claude Code (sin API key)
 - [x] Adaptador para Claude API
+- [x] Adaptador para Ollama (local, privado, sin API key)
 - [x] HTML output con Mermaid pan/zoom, TOC, syntax highlighting, file tree
 - [x] Markdown output (Notion/Obsidian/GitBook/MkDocs compatible)
 - [x] Comando `render` para iterar diseño sin gastar tokens
 - [x] `repomap doctor`, `clean`, `status`, `hooks install`
 - [x] Live-reload en `serve`
 - [x] GitHub Action
-- [x] Adaptador para Ollama (local, privado, sin API key)
-- [ ] **`repomap init` interactivo** — reemplazar el template estático actual por un flujo guiado:
-  - Detección automática de repos en `cwd` (busca `.git/`, `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml` 1-2 niveles deep)
-  - Multi-select de cuáles incluir, con toggle para añadir paths manuales
-  - Prompt por: provider AI (default = el que tenga setup válido: `claude` en PATH → `claude-code`; si hay `ANTHROPIC_API_KEY` → `claude`; si Ollama responde → `ollama`), idioma, output dir, formato
-  - Por cada repo: pide `name` (sugiere basename) y `description` opcional
-  - Muestra preview del yaml y confirma antes de escribir
-  - Backward compat: `repomap init --yes` mantiene el comportamiento actual (template estático)
-  - Dep nueva: `@inquirer/prompts` (~30KB, modular, mantenido por npm)
-  - Lift: ~200 líneas en `packages/cli/src/index.ts` reemplazando el bloque `init`
+- [x] `repomap init` interactivo con detección de repos y sniff de provider
+- [x] Generación paralela con prompt caching y sub-modelo barato (Haiku)
+- [x] Flag `--with-api-ref` para repos tipo librería/SDK
 - [ ] Adaptador para Gemini (usa la integración nativa de graphify)
+- [ ] Adaptador para OpenAI
 - [ ] Sistema de temas
 - [ ] Chat embebido "Pregúntale a los docs"
 
 ---
 
+## Contribuir
+
+PRs bienvenidos. Para cambios mayores, abre primero un issue para discutir el approach.
+
+```bash
+git clone https://github.com/Yeinthony/repomap.git
+cd repomap
+npm install
+npm run build
+npm test
+```
+
+Issues y feedback: <https://github.com/Yeinthony/repomap/issues>
+
+---
+
 ## Licencia
 
-MIT
+[MIT](./LICENSE) © Yeinthony Vargas

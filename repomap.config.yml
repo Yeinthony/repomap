@@ -6,13 +6,10 @@ repos:
     description: Utilidad para generar documentacion
   - path: ./packages/adapters/claude
     name: Claude
-    description: Adaptador para claude
   - path: ./packages/adapters/claude-code
-    name: claude-code
-    description: Adaptador para claude-code
+    name: Claude Code
   - path: ./packages/adapters/ollama
     name: Ollama
-    description: Adaptador para ollama
   - path: ./packages/cli
     name: CLI
   - path: ./packages/core
@@ -24,7 +21,7 @@ output:
 
 ai:
   provider: claude-code
-  model: sonnet 4.6
+  model: sonnet
   # maxBudgetUsd: 1.00   # safety cap per call
 
 language: es
