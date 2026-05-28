@@ -279,12 +279,15 @@ function stripJsonFences(text: string): string {
 }
 
 /**
- * Probe an Ollama server for reachability and (optionally) confirm a model
- * is pulled. Used by `repomap doctor` to give a clear diagnosis.
+ * Probe an Ollama server for reachability, the model list, and (optionally)
+ * whether a specific model is pulled. Used by `repomap doctor` for diagnosis
+ * and by `repomap init` to populate the model picker with REAL local models.
  */
 export async function probeOllama(baseUrl: string = DEFAULT_BASE_URL, model?: string): Promise<{
   reachable: boolean
   modelAvailable?: boolean
+  /** All locally-pulled model names returned by `/api/tags`. */
+  models?: string[]
   error?: string
 }> {
   const url = baseUrl.replace(/\/+$/, '') + '/api/tags'
@@ -292,9 +295,9 @@ export async function probeOllama(baseUrl: string = DEFAULT_BASE_URL, model?: st
     const resp = await fetch(url)
     if (!resp.ok) return { reachable: false, error: `HTTP ${resp.status}` }
     const data = (await resp.json()) as { models?: Array<{ name: string }> }
-    if (!model) return { reachable: true }
     const names = (data.models ?? []).map((m) => m.name)
-    return { reachable: true, modelAvailable: names.includes(model) }
+    if (!model) return { reachable: true, models: names }
+    return { reachable: true, models: names, modelAvailable: names.includes(model) }
   } catch (err: any) {
     const code = err?.cause?.code ?? err?.code ?? 'unknown'
     return { reachable: false, error: code }

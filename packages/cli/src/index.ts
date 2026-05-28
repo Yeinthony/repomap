@@ -83,7 +83,16 @@ const cliDict = {
     initProviderClaude: 'claude — Anthropic API (needs ANTHROPIC_API_KEY)',
     initProviderOllama: 'ollama — local server, fully private',
     initProviderDetected: (prov: string) => `(detected: ${prov} is set up)`,
-    initAskModel: 'Model (blank = default)',
+    initAskModel: 'Model',
+    initAskModelHelp: '(blank = adapter default — common aliases: sonnet, opus, haiku)',
+    initAskModelCustom: 'Type a custom model ID',
+    initModelChoiceDefault: 'Default (adapter picks)',
+    initModelChoiceCustom: 'Other (type a custom ID)…',
+    initProbingClaude: 'Querying Anthropic API for available models…',
+    initProbingOllama: (url: string) => `Querying Ollama at ${url} for pulled models…`,
+    initProbeNoKey: 'No ANTHROPIC_API_KEY — falling back to free-text input.',
+    initProbeFailed: (why: string) => `Probe failed (${why}) — falling back to free-text input.`,
+    initProbeNoModels: 'Server responded but no models found. Type a custom ID.',
     initAskOllamaUrl: 'Ollama server URL',
     initAskOutputDir: 'Output directory',
     initAskFormat: 'Output format',
@@ -241,7 +250,16 @@ const cliDict = {
     initProviderClaude: 'claude — API de Anthropic (necesita ANTHROPIC_API_KEY)',
     initProviderOllama: 'ollama — server local, totalmente privado',
     initProviderDetected: (prov: string) => `(detectado: ${prov} está listo)`,
-    initAskModel: 'Modelo (vacío = default)',
+    initAskModel: 'Modelo',
+    initAskModelHelp: '(vacío = default del adapter — aliases comunes: sonnet, opus, haiku)',
+    initAskModelCustom: 'Escribe un ID de modelo',
+    initModelChoiceDefault: 'Default (decide el adapter)',
+    initModelChoiceCustom: 'Otro (escribir ID a mano)…',
+    initProbingClaude: 'Consultando la API de Anthropic por modelos disponibles…',
+    initProbingOllama: (url: string) => `Consultando Ollama en ${url} por modelos pulleados…`,
+    initProbeNoKey: 'No hay ANTHROPIC_API_KEY — paso a input de texto libre.',
+    initProbeFailed: (why: string) => `Probe falló (${why}) — paso a input de texto libre.`,
+    initProbeNoModels: 'El server respondió pero no hay modelos. Escribe un ID a mano.',
     initAskOllamaUrl: 'URL del server Ollama',
     initAskOutputDir: 'Carpeta de salida',
     initAskFormat: 'Formato de salida',
@@ -1438,18 +1456,17 @@ async function runInteractiveInit(configPath: string, explicitLang?: CliLang): P
   })
 
   // 7. Provider-specific extras
-  const model = (await input({
-    message: tCli(lang, 'initAskModel'),
-    default: '',
-  })).trim()
-
+  // For ollama we need baseUrl BEFORE the model picker, so we can probe the
+  // server for the actual list of pulled models.
   let baseUrl = ''
   if (provider === 'ollama') {
     baseUrl = (await input({
       message: tCli(lang, 'initAskOllamaUrl'),
       default: 'http://localhost:11434',
-    })).trim()
+    })).trim() || 'http://localhost:11434'
   }
+
+  const model = await pickModel(provider, baseUrl, lang, select, input)
 
   // 8. Output
   const outputPath = (await input({
@@ -1496,6 +1513,96 @@ async function runInteractiveInit(configPath: string, explicitLang?: CliLang): P
   console.log(chalk.cyan(tCli(lang, 'initGenerateHint')))
 }
 
+/**
+ * Provider-aware model picker. Probes the actual provider for available
+ * models — no fake/hardcoded options. Falls back to free-text input when
+ * probing isn't possible (claude-code, or probe fails).
+ */
+async function pickModel(
+  provider: 'claude-code' | 'claude' | 'ollama',
+  baseUrl: string,
+  lang: CliLang,
+  selectFn: any,
+  inputFn: any
+): Promise<string> {
+  const CUSTOM = '__custom__'
+  const DEFAULT = ''
+
+  // claude-code: no public API to list models, so accept free text.
+  if (provider === 'claude-code') {
+    return (await inputFn({
+      message: tCli(lang, 'initAskModel') + ' ' + chalk.dim(tCli(lang, 'initAskModelHelp')),
+      default: '',
+    })).trim()
+  }
+
+  // claude (API): probe /v1/models with the API key.
+  if (provider === 'claude') {
+    console.log(chalk.dim('  ' + tCli(lang, 'initProbingClaude')))
+    if (!process.env.ANTHROPIC_API_KEY) {
+      console.log(chalk.yellow('  ' + tCli(lang, 'initProbeNoKey')))
+      return (await inputFn({ message: tCli(lang, 'initAskModel'), default: '' })).trim()
+    }
+    const { probeClaudeModels } = await import('@repomap/adapter-claude')
+    const probe = await probeClaudeModels()
+    if (!probe.reachable || !probe.models || probe.models.length === 0) {
+      const reason = probe.error ?? 'empty'
+      console.log(chalk.yellow('  ' + tCli(lang, 'initProbeFailed')(reason)))
+      return (await inputFn({ message: tCli(lang, 'initAskModel'), default: '' })).trim()
+    }
+    const choices = [
+      { value: DEFAULT, name: tCli(lang, 'initModelChoiceDefault') },
+      ...probe.models.map((m) => ({
+        value: m.id,
+        name: m.displayName ? `${m.id}  ${chalk.dim(m.displayName)}` : m.id,
+      })),
+      { value: CUSTOM, name: tCli(lang, 'initModelChoiceCustom') },
+    ]
+    const picked = await selectFn({
+      message: tCli(lang, 'initAskModel'),
+      choices,
+      default: DEFAULT,
+      theme: { helpMode: 'never' },
+    })
+    if (picked === CUSTOM) {
+      return (await inputFn({ message: tCli(lang, 'initAskModelCustom'), default: '' })).trim()
+    }
+    return picked
+  }
+
+  // ollama: probe /api/tags for locally-pulled models.
+  if (provider === 'ollama') {
+    console.log(chalk.dim('  ' + tCli(lang, 'initProbingOllama')(baseUrl || 'http://localhost:11434')))
+    const { probeOllama } = await import('@repomap/adapter-ollama')
+    const probe = await probeOllama(baseUrl || 'http://localhost:11434')
+    if (!probe.reachable) {
+      console.log(chalk.yellow('  ' + tCli(lang, 'initProbeFailed')(probe.error ?? 'unreachable')))
+      return (await inputFn({ message: tCli(lang, 'initAskModel'), default: '' })).trim()
+    }
+    if (!probe.models || probe.models.length === 0) {
+      console.log(chalk.yellow('  ' + tCli(lang, 'initProbeNoModels')))
+      return (await inputFn({ message: tCli(lang, 'initAskModel'), default: '' })).trim()
+    }
+    const choices = [
+      { value: DEFAULT, name: tCli(lang, 'initModelChoiceDefault') },
+      ...probe.models.map((m) => ({ value: m, name: m })),
+      { value: CUSTOM, name: tCli(lang, 'initModelChoiceCustom') },
+    ]
+    const picked = await selectFn({
+      message: tCli(lang, 'initAskModel'),
+      choices,
+      default: DEFAULT,
+      theme: { helpMode: 'never' },
+    })
+    if (picked === CUSTOM) {
+      return (await inputFn({ message: tCli(lang, 'initAskModelCustom'), default: '' })).trim()
+    }
+    return picked
+  }
+
+  return ''
+}
+
 // ── init helpers ──────────────────────────────────────────────────────────────
 
 interface RepoCandidate { path: string; name: string; markers: string[] }
@@ -1511,8 +1618,13 @@ function repoMarkersIn(dir: string): string[] {
   return found
 }
 
-// Scan cwd + 2 levels deep for directories that look like a code repo.
-// Skip hidden dirs and common build/dep outputs to avoid noise.
+// Scan cwd + up to MAX_DEPTH levels deep for repo-shaped directories.
+// Walks down through container dirs (no markers, not in SKIP_DIRS) to catch
+// nested monorepo layouts like packages/adapters/<name>. Once a dir has a
+// marker, treat it as a repo and stop descending into it.
+const MAX_DETECT_DEPTH = 3
+const MAX_DETECT_RESULTS = 100   // safety cap against runaway scans
+
 function detectRepoCandidates(cwd: string): RepoCandidate[] {
   const results: RepoCandidate[] = []
 
@@ -1521,28 +1633,28 @@ function detectRepoCandidates(cwd: string): RepoCandidate[] {
     results.push({ path: '.', name: path.basename(cwd), markers: cwdMarkers })
   }
 
-  let level1: fs.Dirent[]
-  try { level1 = fs.readdirSync(cwd, { withFileTypes: true }) } catch { return results }
-  for (const entry of level1) {
-    if (!entry.isDirectory() || entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue
-    const subPath = path.join(cwd, entry.name)
-    const markers = repoMarkersIn(subPath)
-    if (markers.length > 0) {
-      results.push({ path: `./${entry.name}`, name: entry.name, markers })
-      continue
-    }
-    // 2nd level — useful for monorepo conventions like packages/<name>/
-    let level2: fs.Dirent[]
-    try { level2 = fs.readdirSync(subPath, { withFileTypes: true }) } catch { continue }
-    for (const sub of level2) {
-      if (!sub.isDirectory() || sub.name.startsWith('.') || SKIP_DIRS.has(sub.name)) continue
-      const deepPath = path.join(subPath, sub.name)
-      const deepMarkers = repoMarkersIn(deepPath)
-      if (deepMarkers.length > 0) {
-        results.push({ path: `./${entry.name}/${sub.name}`, name: sub.name, markers: deepMarkers })
+  const walk = (absDir: string, relPath: string, depth: number): void => {
+    if (depth > MAX_DETECT_DEPTH || results.length >= MAX_DETECT_RESULTS) return
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(absDir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue
+      const sub = path.join(absDir, entry.name)
+      const subRel = relPath ? `${relPath}/${entry.name}` : `./${entry.name}`
+      const markers = repoMarkersIn(sub)
+      if (markers.length > 0) {
+        results.push({ path: subRel, name: entry.name, markers })
+        // Don't descend into a dir we already identified as a repo — its
+        // own children (e.g. packages/, src/) would create false positives.
+        continue
       }
+      // No markers → this is a container dir (packages/, adapters/, apps/).
+      // Recurse one more level.
+      walk(sub, subRel, depth + 1)
     }
   }
+
+  walk(cwd, '', 1)
   return results
 }
 

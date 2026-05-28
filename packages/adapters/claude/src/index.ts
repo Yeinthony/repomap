@@ -277,3 +277,35 @@ Only modify what actually changed. Keep everything else identical.`,
     return JSON.parse(text) as Documentation
   }
 }
+
+/**
+ * Query Anthropic's /v1/models endpoint for the models the account has
+ * access to. Used by `repomap init` to populate the model picker with REAL
+ * values. Falls back gracefully when no API key is available or the request
+ * fails — callers should treat an empty list as "no probe data".
+ */
+export async function probeClaudeModels(apiKey?: string): Promise<{
+  reachable: boolean
+  /** List of model IDs (e.g. 'claude-sonnet-4-6'), or [] when probe failed. */
+  models?: Array<{ id: string; displayName?: string }>
+  error?: string
+}> {
+  const key = apiKey ?? process.env.ANTHROPIC_API_KEY
+  if (!key) return { reachable: false, error: 'no ANTHROPIC_API_KEY' }
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/models', {
+      headers: {
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+      },
+    })
+    if (!resp.ok) return { reachable: false, error: `HTTP ${resp.status}` }
+    const data = (await resp.json()) as { data?: Array<{ id: string; display_name?: string }> }
+    return {
+      reachable: true,
+      models: (data.data ?? []).map((m) => ({ id: m.id, displayName: m.display_name })),
+    }
+  } catch (err: any) {
+    return { reachable: false, error: err?.message ?? String(err) }
+  }
+}
