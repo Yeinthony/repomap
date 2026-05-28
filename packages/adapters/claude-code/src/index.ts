@@ -7,6 +7,7 @@ import type {
   Documentation,
   RepomapConfig,
   GitDiff,
+  GenerateDocsOpts,
 } from '@repomap/core'
 import { compactForLLM, loadDocsSkill, debugDump, generateDocsParallel } from '@repomap/core'
 
@@ -150,12 +151,13 @@ export class ClaudeCodeAdapter implements AIAdapter {
     return env.result
   }
 
-  async generateDocs(graph: CodeGraph, config: RepomapConfig): Promise<Documentation> {
+  async generateDocs(graph: CodeGraph, config: RepomapConfig, opts?: GenerateDocsOpts): Promise<Documentation> {
     const strategy = config.ai.strategy ?? this.defaultStrategy
     if (strategy === 'parallel') {
       return generateDocsParallel(this, graph, config, {
         modelFast: config.ai.modelFast ?? 'haiku',
         apiReference: config.ai.apiReference,
+        onProgress: opts?.onProgress,
       })
     }
     return this.generateDocsSingle(graph, config)

@@ -36,6 +36,7 @@ const cliDict = {
     askingModel: 'Generating documentation with the model… (this can take 1-3 min)',
     waitingModel: (elapsed: string) => `Waiting for the model… ${elapsed}`,
     docsReceived: (elapsed: string) => `Documentation received in ${elapsed}`,
+    llmParallelBatch: 'sections in parallel',
     writingHtml: 'Writing HTML…',
     writingPages: 'Writing pages…',
     done: 'Done',
@@ -192,6 +193,7 @@ const cliDict = {
     askingModel: 'Generando documentación con el modelo… (puede tardar 1-3 min)',
     waitingModel: (elapsed: string) => `Esperando respuesta del modelo… ${elapsed}`,
     docsReceived: (elapsed: string) => `Documentación recibida en ${elapsed}`,
+    llmParallelBatch: 'secciones en paralelo',
     writingHtml: 'Escribiendo HTML…',
     writingPages: 'Escribiendo páginas…',
     done: 'Listo',
@@ -419,43 +421,108 @@ program
     }
 
     const spinner = ora({ text: tCli(lang, 'starting'), spinner: 'dots' }).start()
+    // listr2 is loaded lazily so single-call paths don't pay the import cost.
+    // When the parallel adapter emits a 'plan' event, we swap the generic
+    // LLM spinner for a real multi-task view.
+    let listrActive = false
+    const taskResolvers = new Map<string, { resolve: () => void; reject: (e: Error) => void }>()
+    let listrRunPromise: Promise<unknown> | null = null
 
     try {
-      const orchestrator = new Orchestrator(config, adapter).onPhase((phase) => {
-        switch (phase.kind) {
-          case 'graphify-start':
-            spinner.text = chalk.dim(tCli(lang, 'analyzingRepos')(phase.repos))
-            break
-          case 'graphify-repo-done':
-            spinner.text = chalk.dim(tCli(lang, 'repoDone')(chalk.cyan(phase.repo), phase.nodes, phase.edges))
-            break
-          case 'graphify-merged':
-            spinner.succeed(chalk.green(
-              tCli(lang, 'graphBuilt')(chalk.bold(phase.nodes), chalk.bold(phase.edges), chalk.bold(phase.httpRelations))
-            ))
-            spinner.start(chalk.dim(tCli(lang, 'askingModel')))
-            break
-          case 'llm-progress':
-            spinner.text = chalk.dim(tCli(lang, 'waitingModel')(chalk.cyan(formatElapsed(phase.elapsedSec))))
-            break
-          case 'llm-done':
-            spinner.succeed(chalk.green(tCli(lang, 'docsReceived')(formatElapsed(phase.elapsedSec))))
-            spinner.start(chalk.dim(tCli(lang, 'writingHtml')))
-            break
-          case 'write-start':
-            spinner.text = chalk.dim(tCli(lang, 'writingPages'))
-            break
-          case 'done':
-            spinner.succeed(chalk.green(tCli(lang, 'done')))
-            console.log('')
-            console.log(chalk.dim('  ' + tCli(lang, 'output')) + chalk.cyan(phase.outputPath))
-            console.log('')
-            console.log(chalk.dim('  ' + tCli(lang, 'nextStep')) + chalk.cyan('repomap serve'))
-            break
-        }
-      })
+      const orchestrator = new Orchestrator(config, adapter)
+        .onPhase((phase) => {
+          switch (phase.kind) {
+            case 'graphify-start':
+              spinner.text = chalk.dim(tCli(lang, 'analyzingRepos')(phase.repos))
+              break
+            case 'graphify-repo-done':
+              spinner.text = chalk.dim(tCli(lang, 'repoDone')(chalk.cyan(phase.repo), phase.nodes, phase.edges))
+              break
+            case 'graphify-merged':
+              spinner.succeed(chalk.green(
+                tCli(lang, 'graphBuilt')(chalk.bold(phase.nodes), chalk.bold(phase.edges), chalk.bold(phase.httpRelations))
+              ))
+              spinner.start(chalk.dim(tCli(lang, 'askingModel')))
+              break
+            case 'llm-progress':
+              // While listr2 is rendering its own multi-task view, the
+              // generic "waiting…" counter would conflict. Suppress it.
+              if (listrActive) break
+              spinner.text = chalk.dim(tCli(lang, 'waitingModel')(chalk.cyan(formatElapsed(phase.elapsedSec))))
+              break
+            case 'llm-done':
+              if (listrActive) {
+                console.log(chalk.green('  ✓ ' + tCli(lang, 'docsReceived')(formatElapsed(phase.elapsedSec))))
+              } else {
+                spinner.succeed(chalk.green(tCli(lang, 'docsReceived')(formatElapsed(phase.elapsedSec))))
+              }
+              spinner.start(chalk.dim(tCli(lang, 'writingHtml')))
+              break
+            case 'write-start':
+              spinner.text = chalk.dim(tCli(lang, 'writingPages'))
+              break
+            case 'done':
+              spinner.succeed(chalk.green(tCli(lang, 'done')))
+              console.log('')
+              console.log(chalk.dim('  ' + tCli(lang, 'output')) + chalk.cyan(phase.outputPath))
+              console.log('')
+              console.log(chalk.dim('  ' + tCli(lang, 'nextStep')) + chalk.cyan('repomap serve'))
+              break
+          }
+        })
+        .onAdapterProgress((event) => {
+          if (event.kind === 'plan') {
+            // Stop the generic LLM spinner and hand control to listr2.
+            spinner.stop()
+            listrActive = true
+            const seq = event.calls.filter((c) => c.group === 'sequential')
+            const par = event.calls.filter((c) => c.group !== 'sequential')
+
+            const waitFor = (id: string) => new Promise<void>((resolve, reject) => {
+              taskResolvers.set(id, { resolve, reject })
+            })
+
+            // Lazy-import listr2 so single-call runs don't pay the cost.
+            void import('listr2').then(({ Listr }) => {
+              const tasks: any[] = [
+                ...seq.map((c) => ({
+                  title: `${c.label} ${chalk.dim('(' + (c.model ?? 'default') + ')')}`,
+                  task: () => waitFor(c.id),
+                })),
+              ]
+              if (par.length > 0) {
+                tasks.push({
+                  title: par.length > 1
+                    ? chalk.bold(`${par.length} ${tCli(lang, 'llmParallelBatch')}`)
+                    : par[0].label,
+                  task: (_ctx: unknown, parent: any) => parent.newListr(
+                    par.map((c) => ({
+                      title: `${c.label} ${chalk.dim('(' + (c.model ?? 'default') + ')')}`,
+                      task: () => waitFor(c.id),
+                    })),
+                    { concurrent: true }
+                  ),
+                })
+              }
+              const listr = new Listr(tasks, {
+                concurrent: false,
+                exitOnError: false,
+                rendererOptions: { collapseSubtasks: false } as any,
+              })
+              listrRunPromise = listr.run().catch(() => {})
+            })
+          }
+          if (event.kind === 'done') {
+            taskResolvers.get(event.id)?.resolve()
+          }
+          if (event.kind === 'failed') {
+            taskResolvers.get(event.id)?.reject(new Error(event.error))
+          }
+        })
 
       await orchestrator.generate()
+      // Let listr2 finish its final render before we print the next phase.
+      if (listrRunPromise) await listrRunPromise
     } catch (err: any) {
       spinner.fail(chalk.red(tCli(lang, 'generationFailed')))
       console.error(chalk.red(err.message))

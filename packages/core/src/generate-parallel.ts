@@ -10,6 +10,8 @@ import type {
   RepoSummary,
   HttpRelation,
   GraphifyGraph,
+  AdapterProgress,
+  ProgressCall,
 } from './types.js'
 import { compactForLLM } from './serialize.js'
 import { loadDocsSkill } from './render/docs-skill-loader.js'
@@ -41,6 +43,10 @@ export interface GenerateParallelOpts {
   modelFast?: string
   /** Include symbol-level API reference in each service. Default false. */
   apiReference?: boolean
+  /** Receive per-sub-call progress events so a UI can render the parallel
+   *  work (e.g. multi-task spinner). Emits one 'plan' upfront then
+   *  start/done/failed events per call. */
+  onProgress?: (event: AdapterProgress) => void
 }
 
 export async function generateDocsParallel(
@@ -62,6 +68,18 @@ export async function generateDocsParallel(
   const compactFull = compactForLLM(graph)
   const modelFast = opts.modelFast ?? config.ai.modelFast
   const withApiRef = opts.apiReference ?? config.ai.apiReference ?? false
+  const onProgress = opts.onProgress ?? (() => {})
+  const defaultModelLabel = config.ai.model ?? 'default'
+  const fastModelLabel = modelFast ?? defaultModelLabel
+
+  // Build the full plan upfront so UIs can render the task list before any
+  // call fires. Order matters in the rendering: sequential first, then parallel.
+  const plan: ProgressCall[] = [
+    { id: 'overview', label: 'overview + integrations', model: defaultModelLabel, group: 'sequential' },
+    ...graph.repos.map((repo) => ({ id: `service:${repo.name}`, label: repo.name, model: fastModelLabel, group: 'parallel' as const })),
+    { id: 'getting-started', label: 'getting-started', model: fastModelLabel, group: 'parallel' },
+  ]
+  onProgress({ kind: 'plan', calls: plan })
 
   // Stable system-prompt prefix — identical across calls so the LLM provider
   // can cache it. Caching adapters (claude) get a 90% discount on subsequent
@@ -84,48 +102,51 @@ export async function generateDocsParallel(
   debugDump('parallel-1-overview-system.txt', overviewSystem)
   debugDump('parallel-1-overview-user.txt', overviewUser)
 
-  const overviewRaw = await chat({
-    systemPrompt: overviewSystem,
-    userPrompt: overviewUser,
+  const { overview, integrations } = await runCall('overview', 'overview+integrations', onProgress, async () => {
+    const raw = await chat({
+      systemPrompt: overviewSystem,
+      userPrompt: overviewUser,
+    })
+    debugDump('parallel-1-overview-response.txt', raw)
+    return parseSection<{ overview: OverviewDoc; integrations: IntegrationDoc }>(raw, 'overview+integrations')
   })
-  debugDump('parallel-1-overview-response.txt', overviewRaw)
-
-  const { overview, integrations } = parseSection<{ overview: OverviewDoc; integrations: IntegrationDoc }>(
-    overviewRaw,
-    'overview+integrations'
-  )
 
   // ── Calls 2..N (services) + Call N+1 (getting-started), all in parallel ────
   const serviceSchema = JSON.stringify(buildServiceSchema(withApiRef), null, 2)
   const gettingStartedSchema = JSON.stringify(GETTING_STARTED_SCHEMA, null, 2)
 
-  const servicePromises = graph.repos.map(async (repo) => {
-    const slice = sliceGraphForRepo(graph, repo.name)
-    const compactSlice = compactForLLM(slice)
-    const sys = `${stablePrefix}\n\n=== OUTPUT JSON SCHEMA (single service) ===\n${serviceSchema}\n=== END SCHEMA ===`
-    const usr = `You are documenting the service "${repo.name}". Here is the slice of the system graph relevant to it:\n\n${compactSlice}\n\nProduce a single ServiceDoc JSON object for "${repo.name}", following the schema. Output only the JSON object.`
+  const servicePromises = graph.repos.map((repo) =>
+    runCall(`service:${repo.name}`, repo.name, onProgress, async () => {
+      const slice = sliceGraphForRepo(graph, repo.name)
+      const compactSlice = compactForLLM(slice)
+      const sys = `${stablePrefix}\n\n=== OUTPUT JSON SCHEMA (single service) ===\n${serviceSchema}\n=== END SCHEMA ===`
+      const usr = `You are documenting the service "${repo.name}". Here is the slice of the system graph relevant to it:\n\n${compactSlice}\n\nProduce a single ServiceDoc JSON object for "${repo.name}", following the schema. Output only the JSON object.`
+      debugDump(`parallel-2-service-${repo.name}-user.txt`, usr)
+      const raw = await chat({ systemPrompt: sys, userPrompt: usr, model: modelFast })
+      debugDump(`parallel-2-service-${repo.name}-response.txt`, raw)
+      return parseSection<ServiceDoc>(raw, `service:${repo.name}`)
+    })
+  )
 
-    debugDump(`parallel-2-service-${repo.name}-user.txt`, usr)
-    const raw = await chat({ systemPrompt: sys, userPrompt: usr, model: modelFast })
-    debugDump(`parallel-2-service-${repo.name}-response.txt`, raw)
-    return parseSection<ServiceDoc>(raw, `service:${repo.name}`)
-  })
-
-  const gettingStartedPromise: Promise<GettingStartedDoc | null> = (async () => {
-    const sys = `${stablePrefix}\n\n=== OUTPUT JSON SCHEMA (getting started) ===\n${gettingStartedSchema}\n=== END SCHEMA ===`
-    const usr = `Generate the gettingStarted section for this system. Here is the structural analysis:\n\n${compactFull}\n\nProduce the gettingStarted JSON object following the schema (quickStart, installation, firstProject, troubleshooting). Output only the JSON object.`
-    debugDump('parallel-3-getting-started-user.txt', usr)
-    const raw = await chat({ systemPrompt: sys, userPrompt: usr, model: modelFast })
-    debugDump('parallel-3-getting-started-response.txt', raw)
-    try {
-      return parseSection<GettingStartedDoc>(raw, 'gettingStarted')
-    } catch {
-      // Getting-started is the most error-prone section because of nested
-      // optional fields. If parsing fails, omit it rather than failing the
-      // whole pipeline — overview + services already give the user value.
-      return null
+  // Getting-started is the most error-prone section because of nested optional
+  // fields. If parsing fails, omit it rather than failing the whole pipeline.
+  const gettingStartedPromise: Promise<GettingStartedDoc | null> = runCall(
+    'getting-started',
+    'getting-started',
+    onProgress,
+    async () => {
+      const sys = `${stablePrefix}\n\n=== OUTPUT JSON SCHEMA (getting started) ===\n${gettingStartedSchema}\n=== END SCHEMA ===`
+      const usr = `Generate the gettingStarted section for this system. Here is the structural analysis:\n\n${compactFull}\n\nProduce the gettingStarted JSON object following the schema (quickStart, installation, firstProject, troubleshooting). Output only the JSON object.`
+      debugDump('parallel-3-getting-started-user.txt', usr)
+      const raw = await chat({ systemPrompt: sys, userPrompt: usr, model: modelFast })
+      debugDump('parallel-3-getting-started-response.txt', raw)
+      try {
+        return parseSection<GettingStartedDoc>(raw, 'gettingStarted')
+      } catch {
+        return null
+      }
     }
-  })()
+  )
 
   const [services, gettingStarted] = await Promise.all([
     Promise.all(servicePromises),
@@ -220,6 +241,27 @@ const GETTING_STARTED_SCHEMA = {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+// Wrap an async call so it emits start/done/failed events around its lifetime.
+// Re-throws on failure after emitting 'failed', so Promise.all() rejection
+// behavior is preserved.
+async function runCall<T>(
+  id: string,
+  label: string,
+  onProgress: (e: AdapterProgress) => void,
+  fn: () => Promise<T>
+): Promise<T> {
+  onProgress({ kind: 'start', id })
+  const t0 = Date.now()
+  try {
+    const result = await fn()
+    onProgress({ kind: 'done', id, elapsedSec: Math.round((Date.now() - t0) / 1000) })
+    return result
+  } catch (err: any) {
+    onProgress({ kind: 'failed', id, error: err?.message ?? String(err) })
+    throw err
+  }
+}
 
 function parseSection<T>(raw: string, label: string): T {
   const stripped = stripJsonFences(raw.trim())

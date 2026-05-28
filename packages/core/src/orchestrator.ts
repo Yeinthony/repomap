@@ -9,6 +9,7 @@ import type {
   AIAdapter,
   GitDiff,
   RepoSummary,
+  AdapterProgress,
 } from './types.js'
 import { runGraphify, mergeGraphifyGraphs, isGraphifyAvailable } from './graphify/runner.js'
 import { buildRepoSummary, detectHttpCalls } from './detectors/index.js'
@@ -39,9 +40,11 @@ export type Phase =
   | { kind: 'watch-change'; repo: string; path: string }
 
 export type PhaseListener = (phase: Phase) => void
+export type AdapterProgressListener = (event: AdapterProgress) => void
 
 export class Orchestrator {
   private listener: PhaseListener = () => {}
+  private progressListener: AdapterProgressListener | undefined
 
   constructor(
     private config: RepomapConfig,
@@ -50,6 +53,14 @@ export class Orchestrator {
 
   onPhase(listener: PhaseListener): this {
     this.listener = listener
+    return this
+  }
+
+  /** Subscribe to fine-grained progress from parallel adapters. The CLI uses
+   *  this to drive a listr2 multi-spinner during the LLM phase. Single-call
+   *  adapters never emit these events. */
+  onAdapterProgress(listener: AdapterProgressListener): this {
+    this.progressListener = listener
     return this
   }
 
@@ -79,7 +90,9 @@ export class Orchestrator {
     }, 1000)
     let docs: Documentation
     try {
-      docs = await this.adapter.generateDocs(graph, this.config)
+      docs = await this.adapter.generateDocs(graph, this.config, {
+        onProgress: this.progressListener,
+      })
     } finally {
       clearInterval(tickInterval)
     }

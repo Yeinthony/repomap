@@ -309,7 +309,7 @@ export interface ChangelogEntry {
 // ── AI Adapter interface ─────────────────────────────────────────────────────
 
 export interface AIAdapter {
-  generateDocs(graph: CodeGraph, config: RepomapConfig): Promise<Documentation>
+  generateDocs(graph: CodeGraph, config: RepomapConfig, opts?: GenerateDocsOpts): Promise<Documentation>
   updateDocs(
     existing: Documentation,
     diff: GitDiff,
@@ -323,6 +323,27 @@ export interface AIAdapter {
   /** Default strategy for `generateDocs`. Adapters with prompt caching
    *  benefit from 'parallel'; cacheless adapters should stay 'single'. */
   defaultStrategy?: 'parallel' | 'single'
+}
+
+export interface GenerateDocsOpts {
+  /** Receive per-sub-call progress events. Single-call adapters never emit
+   *  these; parallel adapters emit one 'plan' upfront then start/done/failed
+   *  per call. UIs can use this to render multi-spinner views. */
+  onProgress?: (event: AdapterProgress) => void
+}
+
+export type AdapterProgress =
+  | { kind: 'plan'; calls: ProgressCall[] }
+  | { kind: 'start'; id: string }
+  | { kind: 'done'; id: string; elapsedSec: number }
+  | { kind: 'failed'; id: string; error: string }
+
+export interface ProgressCall {
+  id: string
+  label: string
+  model?: string
+  /** 'sequential' calls finish before parallel ones start (cache warming). */
+  group?: 'sequential' | 'parallel'
 }
 
 export interface ChatOpts {

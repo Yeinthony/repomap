@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { AIAdapter, CodeGraph, Documentation, RepomapConfig, GitDiff } from '@repomap/core'
+import type { AIAdapter, CodeGraph, Documentation, RepomapConfig, GitDiff, GenerateDocsOpts } from '@repomap/core'
 import { compactForLLM, loadDocsSkill, debugDump, generateDocsParallel } from '@repomap/core'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -141,12 +141,13 @@ export class ClaudeAdapter implements AIAdapter {
     return this.modelAliases[name] ?? name
   }
 
-  async generateDocs(graph: CodeGraph, config: RepomapConfig): Promise<Documentation> {
+  async generateDocs(graph: CodeGraph, config: RepomapConfig, opts?: GenerateDocsOpts): Promise<Documentation> {
     const strategy = config.ai.strategy ?? this.defaultStrategy
     if (strategy === 'parallel') {
       return generateDocsParallel(this, graph, config, {
         modelFast: this.resolveModel(config.ai.modelFast ?? 'haiku'),
         apiReference: config.ai.apiReference,
+        onProgress: opts?.onProgress,
       })
     }
     return this.generateDocsSingle(graph, config)
