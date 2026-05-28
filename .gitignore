@@ -4,6 +4,9 @@ node_modules/
 # Build outputs — all dist dirs at any depth
 **/dist/
 
+# TypeScript incremental build info
+*.tsbuildinfo
+
 # Compiled artifacts that end up alongside source files
 packages/**/*.js
 packages/**/*.d.ts
@@ -15,6 +18,7 @@ packages/**/*.d.ts.map
 
 # Generated docs (runtime output, not source)
 repomap-docs/
+docs/
 
 # Graphify intermediate outputs
 graphify-out/
@@ -22,6 +26,14 @@ graphify-out/
 
 # Repomap config knowledge cache
 **/data/knowledge.json
+
+# Repomap debug dumps (from `generate --debug`)
+.repomap-debug/
+**/.repomap-debug/
+
+# Local repomap config (machine-specific paths). Use examples/repomap.config.yml
+# as the canonical template. Run `repomap init` to generate yours.
+/repomap.config.yml
 
 # Environment
 .env
@@ -44,6 +56,19 @@ npm-debug.log*
 
 # Test coverage
 coverage/
+.nyc_output/
+
+# Caches
+.eslintcache
+.cache/
+.tmp/
+tmp/
+
+# npm pack artifacts
+*.tgz
+
+# Local npm auth (never commit this)
+.npmrc
 
 # Claude internal
 .claude/scheduled_tasks.lock
