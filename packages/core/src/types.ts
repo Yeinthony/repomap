@@ -337,6 +337,17 @@ export type AdapterProgress =
   | { kind: 'start'; id: string }
   | { kind: 'done'; id: string; elapsedSec: number }
   | { kind: 'failed'; id: string; error: string }
+  /** Cost/usage metadata reported by the adapter once results are available
+   *  (or even on failure envelopes — so the user can see what was spent on a
+   *  rate-limit error). All fields optional; adapters report what they have. */
+  | {
+      kind: 'result-meta'
+      costUsd?: number
+      inputTokens?: number
+      outputTokens?: number
+      cacheReadTokens?: number
+      cacheCreationTokens?: number
+    }
 
 export interface ProgressCall {
   id: string

@@ -16,6 +16,7 @@ import { buildRepoSummary, detectHttpCalls } from './detectors/index.js'
 import { readPackageMeta } from './detectors/repo-summary.js'
 import { generateHTML, generateMarkdown } from './render/html.js'
 import { debugDumpJson } from './debug.js'
+import { compactForLLM } from './serialize.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ORCHESTRATOR
@@ -32,6 +33,16 @@ export type Phase =
   | { kind: 'graphify-start'; repos: number }
   | { kind: 'graphify-repo-done'; repo: string; nodes: number; edges: number }
   | { kind: 'graphify-merged'; nodes: number; edges: number; httpRelations: number }
+  | {
+      kind: 'llm-call-start'
+      adapter: string
+      model: string
+      strategy: 'parallel' | 'single'
+      apiReference: boolean
+      /** Char count of the compact graph passed to the LLM (rough token proxy:
+       *  ~4 chars/token for English/code, ~3.5 for Spanish prose). */
+      compactChars: number
+    }
   | { kind: 'llm-start' }
   | { kind: 'llm-progress'; elapsedSec: number }
   | { kind: 'llm-done'; elapsedSec: number }
@@ -82,6 +93,20 @@ export class Orchestrator {
     })
 
     debugDumpJson('code-graph.json', graph)
+
+    const adapterName = this.adapter.constructor.name
+      .replace(/Adapter$/, '')
+      .toLowerCase()
+    const strategy = this.config.ai.strategy ?? this.adapter.defaultStrategy ?? 'single'
+    const compactChars = compactForLLM(graph).length
+    this.listener({
+      kind: 'llm-call-start',
+      adapter: adapterName,
+      model: this.config.ai.model ?? 'default',
+      strategy,
+      apiReference: this.config.ai.apiReference ?? false,
+      compactChars,
+    })
 
     this.listener({ kind: 'llm-start' })
     const t0 = Date.now()

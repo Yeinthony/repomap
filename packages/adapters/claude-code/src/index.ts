@@ -3,6 +3,7 @@ import os from 'os'
 import path from 'path'
 import type {
   AIAdapter,
+  AdapterProgress,
   CodeGraph,
   Documentation,
   RepomapConfig,
@@ -18,28 +19,11 @@ import { compactForLLM, loadDocsSkill, debugDump, generateDocsParallel } from '@
 // ANTHROPIC_API_KEY is required.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Static schema — lives in the system prompt so the user prompt only carries
-// the codebase data. generatedAt is injected by the code after parsing.
-const DOC_JSON_SCHEMA = `{
-  "overview": {
-    "title": "string",
-    "summary": "2-3 sentence plain-language summary",
-    "analogy": "A real-world analogy explaining the whole system",
-    "architecture": "mermaid diagram source (graph TD)",
-    "keyConceptsFor": ["concept1", "concept2"]
-  },
-  "services": [
-    {
-      "name": "string",
-      "purpose": "one sentence",
-      "longDescription": "full explanation, 3-5 paragraphs",
-      "analogy": "real-world analogy for this specific service",
-      "architecture": "mermaid diagram source",
-      "endpoints": [{"method": "GET", "path": "/example", "description": "string", "requestExample": "optional", "responseExample": "optional"}],
-      "events": [{"name": "string", "type": "publishes", "description": "string"}],
-      "envVars": [{"name": "string", "description": "string", "required": true, "example": "string"}],
-      "gettingStarted": "step by step to run locally",
-      "examples": [{"title": "string", "description": "string", "code": "string", "language": "string"}],
+// Schema fragment for the symbol-level API reference. Optional — gated by
+// config.ai.apiReference. Inlining it adds ~4-5K output tokens *per service*,
+// which on a 6-service repo can be the difference between hitting the daily
+// limit and finishing in one shot.
+const API_REFERENCE_FRAGMENT = `,
       "apiReference": {
         "intro": "1-2 sentences describing the public API surface of this service",
         "sections": [
@@ -60,7 +44,33 @@ const DOC_JSON_SCHEMA = `{
             ]
           }
         ]
-      }
+      }`
+
+function buildDocJsonSchema(opts: { withApiReference: boolean }): string {
+  const apiRef = opts.withApiReference ? API_REFERENCE_FRAGMENT : ''
+  const apiRefNote = opts.withApiReference
+    ? ''
+    : `\n- OMIT the "apiReference" field entirely from every service object. Do not generate it.`
+  return `{
+  "overview": {
+    "title": "string",
+    "summary": "2-3 sentence plain-language summary",
+    "analogy": "A real-world analogy explaining the whole system",
+    "architecture": "mermaid diagram source (graph TD)",
+    "keyConceptsFor": ["concept1", "concept2"]
+  },
+  "services": [
+    {
+      "name": "string",
+      "purpose": "one sentence",
+      "longDescription": "full explanation, 3-5 paragraphs",
+      "analogy": "real-world analogy for this specific service",
+      "architecture": "mermaid diagram source",
+      "endpoints": [{"method": "GET", "path": "/example", "description": "string", "requestExample": "optional", "responseExample": "optional"}],
+      "events": [{"name": "string", "type": "publishes", "description": "string"}],
+      "envVars": [{"name": "string", "description": "string", "required": true, "example": "string"}],
+      "gettingStarted": "step by step to run locally",
+      "examples": [{"title": "string", "description": "string", "code": "string", "language": "string"}]${apiRef}
     }
   ],
   "integrations": {
@@ -114,7 +124,8 @@ GETTING STARTED GUIDANCE:
 - firstProject: a real end-to-end walkthrough using the actual symbols/endpoints/commands of this codebase (not generic). 4-7 steps.
 - troubleshooting: 5-10 items minimum. Mine the README and code for actual error messages users hit ('command not found', 'auth failure', 'quota', etc.).
 - Tutorials are PEDAGOGICAL — explain the why, not just the what. Use second-person ("you", "tú"). Anticipate questions.
-- Code blocks MUST be syntactically valid and copy-pasteable.`
+- Code blocks MUST be syntactically valid and copy-pasteable.${apiRefNote}`
+}
 
 export interface ClaudeCodeAdapterOptions {
   model?: string                // 'sonnet' | 'opus' | full id; default 'sonnet'
@@ -160,13 +171,15 @@ export class ClaudeCodeAdapter implements AIAdapter {
         onProgress: opts?.onProgress,
       })
     }
-    return this.generateDocsSingle(graph, config)
+    return this.generateDocsSingle(graph, config, opts)
   }
 
-  private async generateDocsSingle(graph: CodeGraph, config: RepomapConfig): Promise<Documentation> {
+  private async generateDocsSingle(graph: CodeGraph, config: RepomapConfig, opts?: GenerateDocsOpts): Promise<Documentation> {
     const lang = config.language === 'es' ? 'Spanish' : 'English'
     const compact = compactForLLM(graph)
     const skill = loadDocsSkill()
+    const withApiReference = config.ai.apiReference ?? false
+    const schema = buildDocJsonSchema({ withApiReference })
 
     const baseSystem = [
       `You are a senior software architect and technical writer.`,
@@ -177,7 +190,7 @@ export class ClaudeCodeAdapter implements AIAdapter {
 
     const staticParts: string[] = []
     if (skill) staticParts.push(`=== DOCS WRITER PLAYBOOK (follow these standards) ===\n${skill.text}\n=== END PLAYBOOK ===`)
-    staticParts.push(`=== OUTPUT JSON SCHEMA ===\n${DOC_JSON_SCHEMA}\n=== END SCHEMA ===`)
+    staticParts.push(`=== OUTPUT JSON SCHEMA ===\n${schema}\n=== END SCHEMA ===`)
 
     const systemPrompt = `${baseSystem}\n\n${staticParts.join('\n\n')}`
 
@@ -195,6 +208,7 @@ Generate documentation following the JSON schema defined in the system prompt. O
       model: this.model,
       binary: this.binary,
       maxBudgetUsd: this.maxBudgetUsd,
+      apiReference: withApiReference,
       systemPromptChars: systemPrompt.length,
       userPromptChars: userPrompt.length,
       compactChars: compact.length,
@@ -202,6 +216,9 @@ Generate documentation following the JSON schema defined in the system prompt. O
 
     const raw = await this.runClaude(systemPrompt, userPrompt)
     debugDump('llm-raw-response.json', raw)
+    // Surface cost/usage even on parse failure or error envelopes, so the user
+    // sees what was spent on a rate-limit hit.
+    emitMetaFromEnvelope(raw, opts?.onProgress)
     try {
       const doc = parseDocumentation(raw)
       doc.generatedAt = new Date().toISOString()
@@ -338,6 +355,36 @@ function stripJsonFences(text: string): string {
   // ```json ... ```  or  ``` ... ```
   const m = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/)
   return m ? m[1] : text
+}
+
+/**
+ * Parse the claude-code envelope and forward cost/usage to the progress
+ * listener. Tolerant of malformed envelopes (just bails). Called on both
+ * success and error paths — surfaces the spend on rate-limit hits.
+ */
+function emitMetaFromEnvelope(stdout: string, onProgress?: (e: AdapterProgress) => void): void {
+  if (!onProgress) return
+  try {
+    const env = JSON.parse(stdout) as {
+      total_cost_usd?: number
+      usage?: {
+        input_tokens?: number
+        output_tokens?: number
+        cache_read_input_tokens?: number
+        cache_creation_input_tokens?: number
+      }
+    }
+    onProgress({
+      kind: 'result-meta',
+      costUsd: env.total_cost_usd,
+      inputTokens: env.usage?.input_tokens,
+      outputTokens: env.usage?.output_tokens,
+      cacheReadTokens: env.usage?.cache_read_input_tokens,
+      cacheCreationTokens: env.usage?.cache_creation_input_tokens,
+    })
+  } catch {
+    /* envelope wasn't JSON — nothing to report */
+  }
 }
 
 function enrichedPath(): string {

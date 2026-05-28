@@ -35,6 +35,13 @@ const cliDict = {
     graphBuilt: (n: number, e: number, h: number) => `Graph built: ${n} nodes · ${e} edges · ${h} HTTP relations`,
     askingModel: 'Generating documentation with the model… (this can take 1-3 min)',
     waitingModel: (elapsed: string) => `Waiting for the model… ${elapsed}`,
+    waitingHintSlow: 'taking longer than usual — check your quota: `claude --version`',
+    waitingHintStuck: 'this looks stuck — Ctrl+C and try `repomap doctor`',
+    llmCallStart: (model: string, strategy: string, apiRef: string, tokens: string) =>
+      `→ Sending ~${tokens} input tokens · ${model} · strategy: ${strategy} · apiReference: ${apiRef}`,
+    resultMeta: (input: string, output: string, cost: string) =>
+      `${input} → ${output} tokens · ${cost}`,
+    resultMetaErrSpent: (cost: string) => `(spent ${cost} before the error)`,
     docsReceived: (elapsed: string) => `Documentation received in ${elapsed}`,
     llmParallelBatch: 'sections in parallel',
     writingHtml: 'Writing HTML…',
@@ -202,6 +209,13 @@ const cliDict = {
     graphBuilt: (n: number, e: number, h: number) => `Grafo construido: ${n} nodos · ${e} edges · ${h} HTTP relations`,
     askingModel: 'Generando documentación con el modelo… (puede tardar 1-3 min)',
     waitingModel: (elapsed: string) => `Esperando respuesta del modelo… ${elapsed}`,
+    waitingHintSlow: 'está tardando más de lo normal — revisa tu cuota con `claude --version`',
+    waitingHintStuck: 'parece atorado — Ctrl+C y prueba `repomap doctor`',
+    llmCallStart: (model: string, strategy: string, apiRef: string, tokens: string) =>
+      `→ Enviando ~${tokens} tokens · ${model} · strategy: ${strategy} · apiReference: ${apiRef}`,
+    resultMeta: (input: string, output: string, cost: string) =>
+      `${input} → ${output} tokens · ${cost}`,
+    resultMetaErrSpent: (cost: string) => `(gastaste ${cost} antes del error)`,
     docsReceived: (elapsed: string) => `Documentación recibida en ${elapsed}`,
     llmParallelBatch: 'secciones en paralelo',
     writingHtml: 'Escribiendo HTML…',
@@ -447,6 +461,10 @@ program
     let listrActive = false
     const taskResolvers = new Map<string, { resolve: () => void; reject: (e: Error) => void }>()
     let listrRunPromise: Promise<unknown> | null = null
+    // Captured from the result-meta event (when the adapter reports it).
+    // Surfaced in both success and failure paths.
+    type ResultMeta = { costUsd?: number; inputTokens?: number; outputTokens?: number }
+    const metaHolder: { value: ResultMeta | null } = { value: null }
 
     try {
       const orchestrator = new Orchestrator(config, adapter)
@@ -462,22 +480,47 @@ program
               spinner.succeed(chalk.green(
                 tCli(lang, 'graphBuilt')(chalk.bold(phase.nodes), chalk.bold(phase.edges), chalk.bold(phase.httpRelations))
               ))
+              break
+            case 'llm-call-start': {
+              // Print the call summary as a standalone line BEFORE the
+              // spinner starts. The user sees what's being sent and gets
+              // an anchor for the elapsed counter that follows.
+              const tokensEstimate = formatTokensApprox(phase.compactChars)
+              console.log(chalk.dim('  ' + tCli(lang, 'llmCallStart')(
+                chalk.cyan(phase.model),
+                phase.strategy,
+                phase.apiReference ? 'on' : 'off',
+                chalk.bold(tokensEstimate)
+              )))
               spinner.start(chalk.dim(tCli(lang, 'askingModel')))
               break
-            case 'llm-progress':
+            }
+            case 'llm-progress': {
               // While listr2 is rendering its own multi-task view, the
               // generic "waiting…" counter would conflict. Suppress it.
               if (listrActive) break
-              spinner.text = chalk.dim(tCli(lang, 'waitingModel')(chalk.cyan(formatElapsed(phase.elapsedSec))))
+              const base = tCli(lang, 'waitingModel')(chalk.cyan(formatElapsed(phase.elapsedSec)))
+              const hint = waitHint(lang, phase.elapsedSec)
+              spinner.text = chalk.dim(hint ? `${base} ${chalk.yellow(`· ${hint}`)}` : base)
               break
-            case 'llm-done':
+            }
+            case 'llm-done': {
+              const metaSuffix = metaHolder.value
+                ? '  ' + chalk.dim('· ' + tCli(lang, 'resultMeta')(
+                    formatTokensCompact(metaHolder.value.inputTokens),
+                    formatTokensCompact(metaHolder.value.outputTokens),
+                    formatCostUsd(metaHolder.value.costUsd)
+                  ))
+                : ''
+              const line = tCli(lang, 'docsReceived')(formatElapsed(phase.elapsedSec)) + metaSuffix
               if (listrActive) {
-                console.log(chalk.green('  ✓ ' + tCli(lang, 'docsReceived')(formatElapsed(phase.elapsedSec))))
+                console.log(chalk.green('  ✓ ' + line))
               } else {
-                spinner.succeed(chalk.green(tCli(lang, 'docsReceived')(formatElapsed(phase.elapsedSec))))
+                spinner.succeed(chalk.green(line))
               }
               spinner.start(chalk.dim(tCli(lang, 'writingHtml')))
               break
+            }
             case 'write-start':
               spinner.text = chalk.dim(tCli(lang, 'writingPages'))
               break
@@ -491,6 +534,14 @@ program
           }
         })
         .onAdapterProgress((event) => {
+          if (event.kind === 'result-meta') {
+            metaHolder.value = {
+              costUsd: event.costUsd,
+              inputTokens: event.inputTokens,
+              outputTokens: event.outputTokens,
+            }
+            return
+          }
           if (event.kind === 'plan') {
             // Stop the generic LLM spinner and hand control to listr2.
             spinner.stop()
@@ -546,6 +597,9 @@ program
     } catch (err: any) {
       spinner.fail(chalk.red(tCli(lang, 'generationFailed')))
       console.error(chalk.red(err.message))
+      if (metaHolder.value?.costUsd != null) {
+        console.error(chalk.yellow('  ' + tCli(lang, 'resultMetaErrSpent')(formatCostUsd(metaHolder.value.costUsd))))
+      }
       if (process.env.REPOMAP_DEBUG_DIR) {
         console.log(chalk.dim('  ' + tCli(lang, 'debugDirCreated')(process.env.REPOMAP_DEBUG_DIR)))
       }
@@ -1986,4 +2040,34 @@ function formatElapsed(sec: number): string {
   const m = Math.floor(sec / 60)
   const s = sec % 60
   return `${m}m ${s.toString().padStart(2, '0')}s`
+}
+
+/** Rough token estimate from a char count of the compact graph.
+ *  ~3.5 chars/token covers a mix of identifiers + Spanish/English prose. */
+function formatTokensApprox(chars: number): string {
+  const tokens = Math.round(chars / 3.5)
+  if (tokens < 1000) return `${tokens}`
+  return `${(tokens / 1000).toFixed(1)}K`
+}
+
+/** Compact token formatter for exact counts coming from the API/envelope. */
+function formatTokensCompact(n?: number): string {
+  if (n == null) return '—'
+  if (n < 1000) return `${n}`
+  return `${(n / 1000).toFixed(1)}K`
+}
+
+function formatCostUsd(usd?: number): string {
+  if (usd == null) return '—'
+  if (usd < 0.01) return '<$0.01'
+  if (usd < 1) return `$${usd.toFixed(2)}`
+  return `$${usd.toFixed(2)}`
+}
+
+/** Inform the user when the wait is unusually long. Thresholds based on
+ *  what's typical for Sonnet single-call on medium repos. */
+function waitHint(lang: CliLang, elapsedSec: number): string | null {
+  if (elapsedSec >= 600) return tCli(lang, 'waitingHintStuck')
+  if (elapsedSec >= 180) return tCli(lang, 'waitingHintSlow')
+  return null
 }

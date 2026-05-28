@@ -6,28 +6,9 @@ import { compactForLLM, loadDocsSkill, debugDump, generateDocsParallel } from '@
 // CLAUDE ADAPTER
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Static schema template — kept here (not in the user prompt) so it can be
-// cached via cache_control. generatedAt is injected by the code after parsing.
-const DOC_JSON_SCHEMA = `{
-  "overview": {
-    "title": "string",
-    "summary": "2-3 sentence plain-language summary",
-    "analogy": "A real-world analogy explaining the whole system",
-    "architecture": "mermaid diagram source (graph TD)",
-    "keyConceptsFor": ["concept1", "concept2"]
-  },
-  "services": [
-    {
-      "name": "string",
-      "purpose": "one sentence",
-      "longDescription": "full explanation, 3-5 paragraphs",
-      "analogy": "real-world analogy for this specific service",
-      "architecture": "mermaid diagram source",
-      "endpoints": [{"method": "GET", "path": "/example", "description": "string", "requestExample": "optional", "responseExample": "optional"}],
-      "events": [{"name": "string", "type": "publishes|subscribes", "description": "string"}],
-      "envVars": [{"name": "string", "description": "string", "required": true, "example": "string"}],
-      "gettingStarted": "step by step to run locally",
-      "examples": [{"title": "string", "description": "string", "code": "string", "language": "string"}],
+// Schema fragment for the symbol-level API reference. Optional — gated by
+// config.ai.apiReference. Inlining it adds ~4-5K output tokens *per service*.
+const API_REFERENCE_FRAGMENT = `,
       "apiReference": {
         "intro": "1-2 sentences describing the public API surface of this service",
         "sections": [
@@ -48,7 +29,33 @@ const DOC_JSON_SCHEMA = `{
             ]
           }
         ]
-      }
+      }`
+
+function buildDocJsonSchema(opts: { withApiReference: boolean }): string {
+  const apiRef = opts.withApiReference ? API_REFERENCE_FRAGMENT : ''
+  const apiRefNote = opts.withApiReference
+    ? ''
+    : `\n- OMIT the "apiReference" field entirely from every service object. Do not generate it.`
+  return `{
+  "overview": {
+    "title": "string",
+    "summary": "2-3 sentence plain-language summary",
+    "analogy": "A real-world analogy explaining the whole system",
+    "architecture": "mermaid diagram source (graph TD)",
+    "keyConceptsFor": ["concept1", "concept2"]
+  },
+  "services": [
+    {
+      "name": "string",
+      "purpose": "one sentence",
+      "longDescription": "full explanation, 3-5 paragraphs",
+      "analogy": "real-world analogy for this specific service",
+      "architecture": "mermaid diagram source",
+      "endpoints": [{"method": "GET", "path": "/example", "description": "string", "requestExample": "optional", "responseExample": "optional"}],
+      "events": [{"name": "string", "type": "publishes|subscribes", "description": "string"}],
+      "envVars": [{"name": "string", "description": "string", "required": true, "example": "string"}],
+      "gettingStarted": "step by step to run locally",
+      "examples": [{"title": "string", "description": "string", "code": "string", "language": "string"}]${apiRef}
     }
   ],
   "integrations": {
@@ -102,7 +109,8 @@ GETTING STARTED GUIDANCE:
 - firstProject: a real end-to-end walkthrough using the actual symbols/endpoints/commands of this codebase (not generic). 4-7 steps.
 - troubleshooting: 5-10 items minimum. Mine the README and code for actual error messages users hit ('command not found', 'auth failure', 'quota', etc.).
 - Tutorials are PEDAGOGICAL — explain the why, not just the what. Use second-person ("you", "tú"). Anticipate questions.
-- Code blocks MUST be syntactically valid and copy-pasteable.`
+- Code blocks MUST be syntactically valid and copy-pasteable.${apiRefNote}`
+}
 
 export class ClaudeAdapter implements AIAdapter {
   private client: Anthropic
@@ -150,13 +158,15 @@ export class ClaudeAdapter implements AIAdapter {
         onProgress: opts?.onProgress,
       })
     }
-    return this.generateDocsSingle(graph, config)
+    return this.generateDocsSingle(graph, config, opts)
   }
 
   /** Legacy single-call path. Used when strategy: 'single' is set. */
-  private async generateDocsSingle(graph: CodeGraph, config: RepomapConfig): Promise<Documentation> {
+  private async generateDocsSingle(graph: CodeGraph, config: RepomapConfig, opts?: GenerateDocsOpts): Promise<Documentation> {
     const lang = config.language === 'es' ? 'Spanish' : 'English'
     const compactRepr = compactForLLM(graph)
+    const withApiReference = config.ai.apiReference ?? false
+    const schema = buildDocJsonSchema({ withApiReference })
 
     const baseSystem = `You are a senior software architect and technical writer.
 Generate world-class documentation for a multi-service system.
@@ -170,7 +180,7 @@ Generate world-class documentation for a multi-service system.
     // which lowers cost on repeated calls (watch mode, re-runs).
     const staticParts: string[] = []
     if (skill) staticParts.push(`=== DOCS WRITER PLAYBOOK (follow these standards) ===\n${skill.text}\n=== END PLAYBOOK ===`)
-    staticParts.push(`=== OUTPUT JSON SCHEMA ===\n${DOC_JSON_SCHEMA}\n=== END SCHEMA ===`)
+    staticParts.push(`=== OUTPUT JSON SCHEMA ===\n${schema}\n=== END SCHEMA ===`)
 
     const systemBlocks: any[] = [
       { type: 'text', text: baseSystem },
@@ -190,6 +200,7 @@ Generate documentation following the JSON schema defined in the system prompt. O
       adapter: 'claude',
       model: 'claude-sonnet-4-20250514',
       max_tokens: 8000,
+      apiReference: withApiReference,
       systemBlocksChars: systemBlocks.map((b: any) => b.text.length),
       userPromptChars: userPrompt.length,
       compactChars: compactRepr.length,
@@ -203,6 +214,26 @@ Generate documentation following the JSON schema defined in the system prompt. O
     })
 
     debugDump('llm-raw-response.json', JSON.stringify(response, null, 2))
+
+    // Report usage so the CLI can show cost + tokens after the call.
+    if (opts?.onProgress && response.usage) {
+      const u = response.usage as any
+      const input = u.input_tokens ?? 0
+      const output = u.output_tokens ?? 0
+      const cacheRead = u.cache_read_input_tokens ?? 0
+      const cacheCreate = u.cache_creation_input_tokens ?? 0
+      // Sonnet 4 pricing (per million tokens): input $3, output $15,
+      // cache write $3.75, cache read $0.30. Adjust if model changes.
+      const costUsd = (input * 3 + output * 15 + cacheCreate * 3.75 + cacheRead * 0.3) / 1_000_000
+      opts.onProgress({
+        kind: 'result-meta',
+        costUsd,
+        inputTokens: input,
+        outputTokens: output,
+        cacheReadTokens: cacheRead,
+        cacheCreationTokens: cacheCreate,
+      })
+    }
 
     const text = response.content
       .filter((b) => b.type === 'text')
