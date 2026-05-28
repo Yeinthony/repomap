@@ -31,7 +31,7 @@ Apunta repomap a tus repos, espera 2–5 minutos, y obtienes un sitio HTML de ca
 - [Cómo funciona internamente](#cómo-funciona-internamente-resumen-técnico)
 - [Arquitectura del repo](#arquitectura-del-repo)
 - [Troubleshooting](#troubleshooting)
-- [Soporte Java/Spring — en progreso](#soporte-javaspring--en-progreso)
+- [Soporte Java / Spring Boot](#soporte-java--spring-boot)
 - [Roadmap](#roadmap)
 - [Contribuir](#contribuir)
 - [Licencia](#licencia)
@@ -368,13 +368,14 @@ Con `output.format: markdown`, repomap escribe README + integrations + página p
 
 | Qué detecta | Cómo |
 |------------|------|
-| Endpoints HTTP por servicio | regex sobre Express/Fastify/NestJS/Flask/FastAPI |
-| Eventos publicados | `.emit/.publish/.send('event-name', ...)` |
-| Variables de entorno con URLs | parsing de `.env*` |
+| Endpoints HTTP por servicio | regex sobre Express/Fastify/NestJS/Flask/FastAPI **+ Spring `@(Get\|Post\|Put\|Patch\|Delete)Mapping` y `@RequestMapping` con base path de clase** |
+| Eventos publicados / consumidos | `.emit/.publish/.send('event-name', ...)` **+ Google Pub/Sub `Publisher.newBuilder(topicVar)`, Kafka `@KafkaListener` + `kafkaTemplate.send`, RabbitMQ `@RabbitListener` + `rabbitTemplate.convertAndSend`, JMS `@JmsListener` + `jmsTemplate.convertAndSend`, Spring `applicationContext.publishEvent(new X(...))` + `@EventListener(X.class)`** |
+| Variables de entorno con URLs | parsing de `.env*` **+ Spring `application*.{yml,properties}` y `bootstrap*` (cualquier key `url`/`host`/`endpoint`/`uri` con valor `${ENV_VAR}` o `${ENV_VAR:default}`)** |
 | Mapeos servicio↔host | `docker-compose.yml` (services + environment) |
-| Llamadas HTTP entre servicios | `fetch`, `axios`, `got`, `ky`, `requests`, `httpx` con URL literal o `${SERVICE_URL}` |
-| Estructura de carpetas | filesystem walk filtrado |
+| Llamadas HTTP entre servicios | `fetch`, `axios`, `got`, `ky`, `requests`, `httpx` con URL literal o `${SERVICE_URL}` **+ Java: `RestTemplate.{exchange,getForObject,postForObject,…}`, `WebClient.create/builder().baseUrl`, `@FeignClient(url=…)`, `new Request.Builder().url(…)` (OkHttp), `new HttpGet/HttpPost(…)` (Apache HttpClient). Sigue el chain `@Value("${prop}") → field assign → local concat` para resolver el primer arg.** |
+| Estructura de carpetas | filesystem walk filtrado (excluye `node_modules`, `dist`, `build`, `target`, `src/test`, `.git`, `coverage`) |
 | Símbolos (clases, funciones, imports, calls) | AST nativo de graphify (~12 lenguajes) |
+| Metadata del proyecto | `package.json`, `pyproject.toml`, `go.mod`, **`build.gradle`/`build.gradle.kts` + `settings.gradle`, `pom.xml`** |
 | Comunidades / clusters | algoritmo de graphify sobre el grafo merged |
 
 Para que las conexiones HTTP se detecten bien, conviene que:
@@ -531,102 +532,58 @@ find <repo>/src -name '*.d.ts' -o -name '*.js' -o -name '*.js.map' | xargs rm
 
 ---
 
-## Soporte Java/Spring — en progreso
+## Soporte Java / Spring Boot
 
-> Esta sección es un plan de trabajo para retomar entre sesiones. Hoy `repomap` detecta símbolos Java vía graphify (clases, métodos, imports), pero los detectores de **endpoints**, **HTTP calls cross-service**, **eventos** y **config** están sesgados a JS/Python. Para proyectos Spring Boot reales (que es el target), faltan los siguientes detectores.
+repomap soporta proyectos Java/Spring Boot de primera clase. Los detectores reconocen los patrones idiomáticos de Spring (anotaciones, `@Value` chains, `application.yml`, Gradle/Maven) y generan los mismos artefactos cross-repo que para JS/Python: HttpRelations entre servicios, endpoints REST, eventos publicados/consumidos y metadata de proyecto.
 
-### Proyecto de referencia para validar
+### Frameworks y clientes soportados
 
-`/Users/yeinthonysmartjob/Documents/Work/store-product-aggregator`
+| Categoría | Lo que se detecta |
+|----------|------------------|
+| **Web** | Spring MVC / Spring Boot: `@RestController`, `@(Get\|Post\|Put\|Patch\|Delete)Mapping`, `@RequestMapping` (incluyendo `method = RequestMethod.X`, `method = {GET, POST}`, y combinación con base path a nivel de clase) |
+| **HTTP clients** | `RestTemplate` (`exchange`, `getForObject`, `postForObject`, `getForEntity`, `postForEntity`, `put`, `delete`, `patchForObject`), `WebClient.create()` / `WebClient.builder().baseUrl()`, `@FeignClient(url = …)`, OkHttp `new Request.Builder().url(…)`, Apache HttpClient `new HttpGet/HttpPost(…)` |
+| **Messaging — publishers** | Google Cloud Pub/Sub `Publisher.newBuilder(topicVar)`, Kafka `kafkaTemplate.send`, RabbitMQ `rabbitTemplate.convertAndSend/send`, JMS `jmsTemplate.send/convertAndSend`, Spring application events `(publisher\|context).publishEvent(new X(…))` |
+| **Messaging — subscribers** | `@KafkaListener(topics = …)`, `@RabbitListener(queues = …)`, `@JmsListener(destination = …)`, Spring Cloud GCP `@PubSubListener(subscription = …)`, Spring `@EventListener(X.class)` |
+| **Config** | `application*.{yml,yaml,properties}` y `bootstrap*` — cualquier propiedad cuya key termine en `url`/`host`/`endpoint`/`uri` con valor `${ENV_VAR}` / `${ENV_VAR:default}` se vuelve un mapping resolvible |
+| **Build / metadata** | Gradle (`build.gradle`, `build.gradle.kts`, `settings.gradle`) — `group`, `version`, `rootProject.name`, plugin Spring Boot version, dependencies de producción (`implementation`, `api`, `compileOnly`, `runtimeOnly`, `developmentOnly`; excluye `test*` y `annotationProcessor`). Maven (`pom.xml`) — `<groupId>`, `<artifactId>`, `<version>`, `<description>`, parent Spring Boot, dependencies (excluye `<scope>test</scope>`) |
 
-Stack detectado: Spring Boot 2.5.1 · Java 11 · Gradle · RestTemplate · Google Cloud Pub/Sub · `application.yml` con `${ENV_VAR}` interpolation · Lombok.
+### Cómo se resuelven los URLs entre servicios
 
-**Detecciones esperadas después del fix:**
-- **2 endpoints HTTP**: `POST /pubsub-message`, `POST /pubsub-message/source/{source}`
-- **2 servicios externos vía RestTemplate**: `CatalogExternalService` → `${CATALOG_CORE_SERVICE_URL}`, `MapperExternalService` → `${MARKETPLACE_MAPPER_SERVICE_URL}` y `${BUSINESS_MAPPER_SERVICE_URL}`
-- **1 publisher Pub/Sub**: topic `${STATUS_EVENT_TOPIC_NAME}`
-- **Metadata del proyecto** desde `build.gradle`: `com.store-product-aggregator:1.0.0`, deps Spring Boot
+El patrón más común en Spring inyecta el host base vía `@Value("${some.prop.url}")` y luego concatena con un sufijo dentro del método:
 
-### Plan de implementación
-
-#### 1. `packages/core/src/detectors/service-urls.ts` — parsear Spring config
-
-Hoy solo lee `.env*` y `docker-compose.yml`. Añadir:
-
-- Glob de `src/main/resources/application*.yml`, `application*.yaml`, `application*.properties`
-- Recorrer YAML buscando keys que terminen en `url`, `-url`, `host`, `-host`, `endpoint`, `-endpoint`, `base-url`
-- Si el valor es del tipo `${ENV_VAR}` o `${ENV_VAR:default}` → emitir `ServiceUrlMapping` con `envVar = ENV_VAR`, `url = "${ENV_VAR}"`, `hostHint = ENV_VAR` minúsculas-canónicas, `sourceFile = "application.yml#path.to.key"`
-- Para `.properties`: parsear líneas `key.path=${ENV_VAR}` con misma lógica
-- Importante: incluir `fast-glob` (ya está en deps de core) para encontrar los archivos en cualquier profundidad
-
-#### 2. `packages/core/src/detectors/endpoints.ts` — anotaciones Spring
-
-Añadir tres patrones nuevos al `for (const file)` loop:
-
-- `@(Get|Post|Put|Patch|Delete)Mapping\s*\(\s*(?:value\s*=\s*|path\s*=\s*)?["']([^"']+)["']` — caso `@PostMapping("/x")` y `@GetMapping(value = "/x")`
-- `@RequestMapping\s*\(\s*([^)]+)\)` — extraer `value = "..."` o `path = "..."` y `method = RequestMethod.{GET,POST,...}`. Si no hay method, marcar como `ALL` o iterar para cada método declarado
-- **Base path de clase**: hacer un primer scan del archivo buscando `@RequestMapping("/base")` o `@RequestMapping(value = "/base")` a nivel de clase (antes del primer método). Concatenar con cada path detectado a nivel de método. Heurística simple: si la primera anotación `@RequestMapping` no tiene `method=` y aparece antes de cualquier `@(Get|Post|...)Mapping`, asumir que es nivel de clase
-
-#### 3. `packages/core/src/detectors/http-calls.ts` — clientes HTTP Java
-
-Cuatro familias a soportar:
-
-**RestTemplate** (lo más común en Spring 4-5):
-- `restTemplate\.(exchange|getForObject|getForEntity|postForObject|postForEntity|put|delete|patchForObject)\s*\(\s*([^,)]+)` — capturar primer arg
-- El primer arg suele ser una concatenación: `baseUrl + uri` donde `baseUrl` viene de `@Value("${...}")`. Heurística:
-  - Pre-pase por archivo: mapear `@Value\("\$\{([^}]+)\}"\)\s+(?:private\s+)?(?:final\s+)?String\s+(\w+)` → `{ varName: propPath }`
-  - Cuando matchee una llamada de RestTemplate cuyo primer arg empieza con un identificador conocido, resolver `varName → propPath`, luego buscar `propPath` en los `ServiceUrlMapping` del repo para resolver el `envVar`
-  - Emitir `RawHttpCall` con `url = "${ENV_VAR}" + sufijo`, `envVarHint = ENV_VAR`
-
-**WebClient** (Spring 5+ reactivo):
-- `WebClient\.create\(\s*["']([^"']+)["']\)` — base URL literal
-- `\.uri\(\s*["']([^"']+)["']\)` — path
-- Mismo enfoque de `@Value` para resolver bases
-
-**Feign / OpenFeign**:
-- `@FeignClient\s*\(\s*([^)]+)\)` — extraer `name = "..."`, `url = "..."`. Si `url` es `${ENV_VAR}`, resolver directamente
-
-**OkHttp / Apache HttpClient**:
-- `new\s+Request\.Builder\(\)\s*\.url\(\s*["']([^"']+)["']\)` — OkHttp
-- `new\s+(HttpGet|HttpPost|HttpPut|HttpDelete|HttpPatch)\(\s*["']([^"']+)["']\)` — Apache classic
-
-#### 4. Eventos (Pub/Sub, Kafka, Rabbit, JMS, Spring events)
-
-Añadir al loop de `endpoints.ts` (tipo `event`):
-
-- **Google Pub/Sub**: `Publisher\.newBuilder\(\s*(\w+|"[^"]+")\s*\)` para topic — el arg suele ser un campo del que tienes el `@Value` (mismo truco). Emitir `eventName = topic_resuelto`, marcar publish.
-- **Kafka**: `@KafkaListener\s*\(\s*topics\s*=\s*(\{[^}]+\}|["'][^"']+["'])` (subscribes), `kafkaTemplate\.send\s*\(\s*["']([^"']+)["']` (publishes)
-- **RabbitMQ**: `@RabbitListener\s*\(\s*queues\s*=` (subscribes), `rabbitTemplate\.(convertAndSend|send)\s*\(\s*["']([^"']+)["']` (publishes)
-- **JMS**: `@JmsListener\s*\(\s*destination\s*=`, `jmsTemplate\.(send|convertAndSend)\s*\(`
-- **Spring application events**: `applicationContext\.publishEvent`, `@EventListener` — emitir con `eventName = ClassName`
-
-> El tipo `APIEndpoint` actual ya soporta `type: 'event'` y `eventName`. Para distinguir publishers de subscribers haría falta extender el type (`direction: 'publish' | 'subscribe'`) — opcional, pero útil para la página de integrations.
-
-#### 5. `packages/core/src/detectors/repo-summary.ts` — metadata de Maven/Gradle
-
-Leer `pom.xml` (Maven) y `build.gradle` / `build.gradle.kts` (Gradle):
-
-- **pom.xml**: parseo con `xml2js` (añadir a deps) o regex simple sobre `<groupId>`, `<artifactId>`, `<version>`, `<dependencies>`. Mapear a `PackageMeta`.
-- **build.gradle**: regex sobre `group = '...'`, `version = '...'`, `id 'org.springframework.boot' version 'X.Y.Z'`, y bloque `dependencies { implementation '...' }`. Extraer al menos el framework (Spring Boot vs Quarkus vs Micronaut) y las deps que apunten a HTTP clients / message brokers (Kafka, Rabbit, Pub/Sub).
-- Esto le da al LLM contexto rico: "este repo es Spring Boot 2.5 con Google Pub/Sub y RestTemplate".
-
-#### 6. Validar contra el proyecto de referencia
-
-Después de cada detector, correr:
-
-```bash
-cd ~/workspaces/java-test
-# repomap.config.yml apuntando a /Users/yeinthonysmartjob/Documents/Work/store-product-aggregator
-repomap generate --debug
-# Ver: <output>/.repomap-debug/<timestamp>/code-graph.json
-# Verificar que aparezcan los endpoints, http relations, y eventos esperados arriba
+```java
+@Value("${core-catalog.base-url}") String externalServiceBaseUrl  // ← prop name
+baseUrl = externalServiceBaseUrl;                                  // ← field assign
+String url = baseUrl + uri;                                        // ← local concat
+restTemplate.exchange(url, method, ...);                           // ← actual call
 ```
 
-#### Notas de implementación
+repomap traza ese chain de 4 saltos:
 
-- **No tocar** los detectores actuales de JS/Python — solo añadir patrones nuevos en los mismos loops. Los `CODE_EXTS` ya incluyen `.java`.
-- **Tests**: añadir fixtures Spring mínimos en `packages/core/src/detectors/__fixtures__/spring/` y un `*.test.ts` por detector que parsee y assert el shape.
-- **README usuario**: cuando termine, actualizar la tabla "Detectores" en este README, y añadir Spring Boot al ejemplo de stack.
+1. **`application.yml`** → `core-catalog.base-url: ${CATALOG_CORE_SERVICE_URL}` → mapping `core-catalog.base-url → CATALOG_CORE_SERVICE_URL`
+2. **`@Value` annotation** → variable `externalServiceBaseUrl → CATALOG_CORE_SERVICE_URL`
+3. **Field assignment** (incluyendo formas `ClassName.field = paramName`) → propagación transitiva
+4. **Local concatenation** `String url = baseUrl + …` → `url → CATALOG_CORE_SERVICE_URL`
+5. **HTTP call**: el primer arg `url` se resuelve a `${CATALOG_CORE_SERVICE_URL}` con `envVarHint`
+
+El env var resultante se cruza luego con los nombres de tus repos (`guessRepoFromEnvVar` busca `*_URL`, `*_SERVICE_URL`, `*_API_URL`, etc.) para dibujar la HttpRelation cross-repo.
+
+### Patrones que conviene conocer
+
+**Para que las HttpRelations crucen entre repos**, tu workspace necesita los servicios target como repos en `repomap.config.yml`. Por ejemplo, si tu app talks a `${CATALOG_CORE_SERVICE_URL}`, debe haber un repo con nombre `catalog-core-service` (o similar — el matcher acepta `CATALOG`, `CATALOG_CORE`, `CATALOG_SERVICE`, etc.). Si solo apuntas a un repo aislado, las llamadas se detectan pero no se grafican como edges entre nodos.
+
+**Control flow dinámico** (`if (x) url = otherBase + uri`) no se puede seguir con regex. Cuando un archivo Java declara N bases `@Value`-bound y al menos una llamada HTTP, repomap emite un fallback por base para garantizar que TODAS las dependencias del archivo queden representadas — aunque el `if/else` use solo una de ellas en runtime.
+
+**HTTP method inference**: para `restTemplate.{getForObject,postForObject,…}` el método viene en el nombre. Para `restTemplate.exchange()` se busca `HttpMethod.X` literal en el 2º arg. Si el método viene como variable (`HttpMethod method = HttpMethod.POST; ... exchange(url, method, …)`), la inferencia falla y la relación se emite sin método — el LLM puede leer el código para deducirlo.
+
+**`src/test/**` y `target/**` se excluyen** de todos los scans (Spring/Gradle/Maven convention). Los tests no son parte del runtime documentado.
+
+### Limitaciones conocidas
+
+- Solo `application*.yml/.yaml/.properties` y `bootstrap*` — no parsea archivos custom de config.
+- WebClient: no se sigue el builder chain para combinar `baseUrl + .uri(path)` cuando se setean en pasos separados.
+- `@EventListener` sin arg explícito (con el tipo del parámetro): no se detecta. Usa `@EventListener(SomeEvent.class)` para ser explícito.
+- Lombok-generated constructors: el detector reconoce `@Value` en parámetros independientemente de quién genere el constructor, así que esto funciona en la práctica.
 
 ---
 
@@ -645,7 +602,7 @@ repomap generate --debug
 - [x] `repomap init` interactivo con detección de repos y sniff de provider
 - [x] Generación paralela con prompt caching y sub-modelo barato (Haiku)
 - [x] Flag `--with-api-ref` para repos tipo librería/SDK
-- [ ] **Detectores Spring/Java** (endpoints, RestTemplate/WebClient/Feign, eventos Pub/Sub/Kafka/Rabbit/JMS, `application.yml`, metadata `pom.xml`/`build.gradle`) — ver [Soporte Java/Spring — en progreso](#soporte-javaspring--en-progreso)
+- [x] Detectores Spring/Java — endpoints, RestTemplate/WebClient/Feign/OkHttp/Apache HttpClient, eventos Pub/Sub/Kafka/Rabbit/JMS/Spring, `application.yml`, metadata Gradle/Maven (ver [Soporte Java / Spring Boot](#soporte-java--spring-boot))
 - [ ] Adaptador para Gemini (usa la integración nativa de graphify)
 - [ ] Adaptador para OpenAI
 - [ ] Sistema de temas

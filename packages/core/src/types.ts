@@ -100,6 +100,9 @@ export interface RepoSummary {
 export interface PackageMeta {
   name?: string
   description?: string
+  /** Project version. Populated for Gradle/Maven (top-level `version`),
+   *  npm projects (package.json `version`), etc. */
+  version?: string
   main?: string
   bin?: string | Record<string, string>
   scripts?: Record<string, string>
@@ -110,15 +113,23 @@ export interface APIEndpoint {
   method?: string
   path?: string
   eventName?: string
+  /** For event-typed endpoints: whether this code publishes the event
+   *  (emits/sends it) or subscribes (listens for it). Older detectors may
+   *  leave this unset on inferred publishes. */
+  direction?: 'publish' | 'subscribe'
   type: 'http' | 'grpc' | 'event' | 'graphql' | 'unknown'
   sourceFile?: string
 }
 
 export interface ServiceUrlMapping {
   envVar: string            // e.g. PAYMENTS_SERVICE_URL
-  url: string               // e.g. http://payments:3000
-  hostHint: string          // host portion, used to match other repos
-  sourceFile: string        // where it was declared (.env / docker-compose.yml)
+  url: string               // e.g. http://payments:3000  OR  "${PAYMENTS_SERVICE_URL}" (Spring templates)
+  hostHint: string          // host portion (literal URLs) or lowercased env-var (templates)
+  sourceFile: string        // where it was declared (.env / docker-compose.yml / application.yml#path)
+  /** Dotted property path within a Spring config file
+   *  (e.g. "core-catalog.base-url"). Lets the HTTP-call detector resolve
+   *  Java `@Value("${core-catalog.base-url}")` references back to an env var. */
+  propertyPath?: string
 }
 
 // ── Cross-repo HTTP relations (detected by us, not graphify) ─────────────────
