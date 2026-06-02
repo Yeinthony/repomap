@@ -273,6 +273,11 @@ Return the COMPLETE updated documentation JSON. Only modify what actually change
       '--no-session-persistence',
       '--model', modelOverride ?? this.model,
       '--system-prompt', systemPrompt,
+      // Force a pure prompt→JSON round-trip. Without this, `claude -p` keeps
+      // Read/Grep/Glob/Bash available and the model can decide to explore the
+      // repo itself when the compact graph looks thin — burning the daily
+      // token budget on tool calls and never emitting the final JSON.
+      '--disallowedTools', 'Read,Write,Edit,Bash,Grep,Glob,WebFetch,WebSearch,NotebookEdit,Task',
     ]
     if (this.maxBudgetUsd != null) {
       args.push('--max-budget-usd', String(this.maxBudgetUsd))

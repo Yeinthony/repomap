@@ -86,13 +86,24 @@ export function compactForLLM(graph: CodeGraph): string {
       lines.push(`Top dependencies: ${repo.dependencies.slice(0, 15).join(', ')}`)
     }
 
-    // Per-file symbol map from static TypeScript scan (capped to keep prompt lean)
+    // Per-file symbol map from static scan (capped to keep prompt lean).
+    // Java/Spring entries surface their stereotype as a `tag` (e.g.
+    // `@RestController`) and their public method names as `members` so the
+    // LLM sees each class's role and API surface in one line.
     if (repo.exportedSymbols && repo.exportedSymbols.length > 0) {
       lines.push('Exported symbols (static scan, file → symbols):')
-      for (const fe of repo.exportedSymbols.slice(0, 20)) {
+      for (const fe of repo.exportedSymbols.slice(0, 25)) {
         const symList = fe.symbols
           .slice(0, 8)
-          .map((s) => `${s.async ? 'async ' : ''}${s.kind} ${s.name}`)
+          .map((s) => {
+            const tag = s.tag ? `${s.tag} ` : ''
+            const asyncPrefix = s.async ? 'async ' : ''
+            const members =
+              s.members && s.members.length > 0
+                ? ` [${s.members.slice(0, 8).join(', ')}${s.members.length > 8 ? ', …' : ''}]`
+                : ''
+            return `${tag}${asyncPrefix}${s.kind} ${s.name}${members}`
+          })
           .join(' | ')
         lines.push(`  ${fe.file}: ${symList}`)
       }

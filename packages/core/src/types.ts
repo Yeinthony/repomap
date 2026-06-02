@@ -94,7 +94,7 @@ export interface RepoSummary {
    *  declares about itself: description, scripts, main/bin entry points. */
   packageMeta?: PackageMeta
   /** Static scan of exported symbols per file (regex, no compiler). */
-  exportedSymbols?: Array<{ file: string; symbols: Array<{ name: string; kind: string; async: boolean; line: number }> }>
+  exportedSymbols?: Array<{ file: string; symbols: Array<{ name: string; kind: string; async: boolean; line: number; tag?: string; members?: string[] }> }>
 }
 
 export interface PackageMeta {

@@ -13,6 +13,13 @@ export interface ScannedSymbol {
   kind: 'function' | 'class' | 'interface' | 'type' | 'const' | 'variable' | 'enum'
   async: boolean
   line: number
+  /** Framework label rendered before the kind, e.g. `@RestController` for
+   *  Spring classes. Surfaces the architectural role to the LLM without
+   *  asking it to infer it from the name. */
+  tag?: string
+  /** Member names (methods or fields) attached to a class-like symbol —
+   *  surfaces the public API surface of each class in one line. */
+  members?: string[]
 }
 
 export interface FileExports {

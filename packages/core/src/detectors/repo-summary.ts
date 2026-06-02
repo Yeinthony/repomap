@@ -5,6 +5,8 @@ import type { PackageMeta, RepoConfig, RepoSummary } from '../types.js'
 import { detectEndpoints } from './endpoints.js'
 import { detectServiceUrls } from './service-urls.js'
 import { scanRepoExports } from './ts-scanner.js'
+import { scanRepoJava } from './java-scanner.js'
+import type { FileExports } from './ts-scanner.js'
 
 const LANG_BY_EXT: Record<string, string> = {
   '.ts': 'typescript', '.tsx': 'typescript',
@@ -25,13 +27,15 @@ export async function buildRepoSummary(repo: RepoConfig): Promise<RepoSummary> {
     throw new Error(`Repo path not found: ${absPath}`)
   }
 
-  const [endpoints, languages, dependencies, exportedSymbols] = await Promise.all([
+  const [endpoints, languages, dependencies, tsExports, javaExports] = await Promise.all([
     detectEndpoints(absPath),
     detectLanguages(absPath),
     Promise.resolve(extractDependencies(absPath)),
     scanRepoExports(absPath),
+    scanRepoJava(absPath),
   ])
   const { mappings, dockerServiceName } = detectServiceUrls(absPath)
+  const exportedSymbols = mergeAndRankExports(tsExports, javaExports)
 
   return {
     name: repo.name,
@@ -46,6 +50,47 @@ export async function buildRepoSummary(repo: RepoConfig): Promise<RepoSummary> {
     packageMeta: readPackageMeta(absPath),
     exportedSymbols: exportedSymbols.length > 0 ? exportedSymbols : undefined,
   }
+}
+
+// ── Symbol ranking ───────────────────────────────────────────────────────────
+
+/** Spring stereotype priorities used when ranking which files appear first in
+ *  the LLM prompt. Controllers and services dominate the architectural picture
+ *  so they bubble to the top; entities and plain components rank below since
+ *  the LLM can usually infer those from context. Lower number = higher rank. */
+const STEREOTYPE_RANK: Record<string, number> = {
+  '@RestController': 0,
+  '@Controller': 0,
+  '@RestControllerAdvice': 1,
+  '@ControllerAdvice': 1,
+  '@Service': 2,
+  '@Repository': 3,
+  '@Configuration': 4,
+  '@Component': 5,
+  '@Entity': 6,
+}
+
+function mergeAndRankExports(ts: FileExports[], java: FileExports[]): FileExports[] {
+  const all = [...ts, ...java]
+  return all.sort((a, b) => {
+    const ra = fileRank(a)
+    const rb = fileRank(b)
+    if (ra !== rb) return ra - rb
+    return a.file.localeCompare(b.file)
+  })
+}
+
+/** Pick the strongest stereotype rank across a file's symbols, defaulting to
+ *  a high (worse) number when nothing is tagged so TS files keep their
+ *  alphabetical order after tagged entries. */
+function fileRank(fe: FileExports): number {
+  let best = 100
+  for (const s of fe.symbols) {
+    if (!s.tag) continue
+    const r = STEREOTYPE_RANK[s.tag] ?? 50
+    if (r < best) best = r
+  }
+  return best
 }
 
 function readReadme(repoPath: string): string | undefined {
