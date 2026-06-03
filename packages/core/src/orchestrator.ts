@@ -17,6 +17,7 @@ import { readPackageMeta } from './detectors/repo-summary.js'
 import { generateHTML, generateMarkdown } from './render/html.js'
 import { debugDumpJson } from './debug.js'
 import { compactForLLM } from './serialize.js'
+import { loadDocsSkill } from './render/docs-skill-loader.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ORCHESTRATOR
@@ -42,6 +43,18 @@ export type Phase =
       /** Char count of the compact graph passed to the LLM (rough token proxy:
        *  ~4 chars/token for English/code, ~3.5 for Spanish prose). */
       compactChars: number
+      /** Estimated INPUT tokens summed across all LLM calls the run will fire
+       *  (system + user). Includes skill block, schema block, and compact
+       *  graph. Cache discounts are NOT subtracted — the number reflects what
+       *  the model has to read, not what gets billed. */
+      inputTokensEstimate: number
+      /** Estimated OUTPUT tokens summed across all LLM calls (the JSON
+       *  documentation the model will produce). */
+      outputTokensEstimate: number
+      /** Number of LLM calls the run will fire. 1 for single-strategy
+       *  adapters; (1 + repos + 1) for parallel, minus any sections skipped
+       *  via ai.sections. */
+      callCount: number
     }
   | { kind: 'llm-start' }
   | { kind: 'llm-progress'; elapsedSec: number }
@@ -98,14 +111,17 @@ export class Orchestrator {
       .replace(/Adapter$/, '')
       .toLowerCase()
     const strategy = this.config.ai.strategy ?? this.adapter.defaultStrategy ?? 'single'
-    const compactChars = compactForLLM(graph).length
+    const estimate = estimateLlmUsage(graph, this.config, strategy)
     this.listener({
       kind: 'llm-call-start',
       adapter: adapterName,
       model: this.config.ai.model ?? 'default',
       strategy,
-      apiReference: this.config.ai.apiReference ?? false,
-      compactChars,
+      apiReference: estimate.apiReference,
+      compactChars: estimate.compactChars,
+      inputTokensEstimate: estimate.inputTokens,
+      outputTokensEstimate: estimate.outputTokens,
+      callCount: estimate.callCount,
     })
 
     this.listener({ kind: 'llm-start' })
@@ -339,4 +355,133 @@ function readWorkspaceContext(): import('./types.js').WorkspaceContext | undefin
   const meta = readPackageMeta(cwd)
   if (meta) ctx.rootPackageMeta = meta
   return ctx.readme || ctx.rootPackageMeta ? ctx : undefined
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Token estimate for the upcoming run. Shown to the user before any LLM call
+// fires so they have a sense of cost/wait. Approximate (~10-20% off) — the
+// goal is "is this 5K, 50K, or 500K tokens", not exact billing.
+//
+// Includes ALL parts of every call: skill block (system), schema block
+// (system), compact graph (user), per-call wrapper text. Sums across calls
+// when the strategy is parallel. Cache discounts are NOT subtracted — the
+// number reflects what the model has to read, not what gets billed at
+// post-cache rates.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface LlmUsageEstimate {
+  inputTokens: number
+  outputTokens: number
+  callCount: number
+  compactChars: number   // kept for backward compat with the Phase event
+  apiReference: boolean
+}
+
+// Schema block sizes (chars) — pulled from the adapter source. Constants
+// keep this estimator decoupled from the adapter; if you change a schema,
+// bump the matching number here.
+const SCHEMA_CHARS = {
+  legacySingle: 5300,
+  leanSingle: 2100,
+  legacyOverview: 730,
+  leanOverview: 360,
+  legacyService: 1080,
+  leanService: 750,
+  legacyGettingStarted: 1900,
+  leanGettingStarted: 700,
+  apiRefAddition: 1200, // extra chars when apiReference: true (single mode)
+}
+
+// Rough output budgets (tokens) per section. Calibrated against a 6-service
+// monorepo run; small projects come in under, very large ones a bit over.
+const OUTPUT_TOK = {
+  overview: 600,
+  integrations: 1100,
+  serviceWithoutApiRef: 700,
+  serviceWithApiRef: 1700,
+  gettingStarted: 2400,
+}
+
+function tok(chars: number): number {
+  return Math.round(chars / 4)
+}
+
+function estimateLlmUsage(
+  graph: CodeGraph,
+  config: RepomapConfig,
+  strategy: 'single' | 'parallel'
+): LlmUsageEstimate {
+  const lean = !!config.ai.lean
+  const sections = config.ai.sections ?? {}
+  const apiReference = sections.apiReference ?? config.ai.apiReference ?? false
+  const compactFull = compactForLLM(graph, { lean, budget: config.ai.budget })
+  const compactChars = compactFull.length
+  const baseSysChars = 280       // base instruction prefix
+  const userWrapperChars = 200   // "Here is the structural analysis…" framing
+
+  if (strategy === 'single') {
+    const skill = loadDocsSkill({ lean })
+    const skillChars = skill?.text.length ?? 0
+    const schemaChars =
+      (lean ? SCHEMA_CHARS.leanSingle : SCHEMA_CHARS.legacySingle) +
+      (apiReference ? SCHEMA_CHARS.apiRefAddition : 0)
+    const inputChars = baseSysChars + skillChars + schemaChars + compactChars + userWrapperChars
+    const repoCount = graph.repos.length
+    const wantOverview = sections.overview ?? true
+    const wantIntegrations = sections.integrations ?? true
+    const wantServices = sections.services ?? true
+    const gs = sections.gettingStarted ?? 'auto'
+    const wantGs = gs === true ? true : gs === false ? false : repoCount <= 8
+    const svcOutPerRepo = apiReference ? OUTPUT_TOK.serviceWithApiRef : OUTPUT_TOK.serviceWithoutApiRef
+    const outputTokens =
+      (wantOverview ? OUTPUT_TOK.overview : 0) +
+      (wantIntegrations ? OUTPUT_TOK.integrations : 0) +
+      (wantServices ? svcOutPerRepo * repoCount : 0) +
+      (wantGs ? OUTPUT_TOK.gettingStarted : 0)
+    return { inputTokens: tok(inputChars), outputTokens, callCount: 1, compactChars, apiReference }
+  }
+
+  // parallel — sum across overview + N service + gettingStarted, minus skips.
+  const repoCount = graph.repos.length
+  const wantOverview = (sections.overview ?? true) || (sections.integrations ?? true)
+  const wantServices = sections.services ?? true
+  const gs = sections.gettingStarted ?? 'auto'
+  const wantGs = gs === true ? true : gs === false ? false : repoCount <= 8
+
+  const ovSkill = loadDocsSkill({ sections: ['diataxis', 'diagrams', 'writing'], lean })
+  const svcSkill = loadDocsSkill({ sections: ['templates', 'examples', 'writing'], lean })
+  const gsSkill = loadDocsSkill({ sections: ['templates', 'writing'], lean })
+
+  const ovSchema = lean ? SCHEMA_CHARS.leanOverview : SCHEMA_CHARS.legacyOverview
+  const svcSchema = (lean ? SCHEMA_CHARS.leanService : SCHEMA_CHARS.legacyService) +
+                    (apiReference ? SCHEMA_CHARS.apiRefAddition : 0)
+  const gsSchema = lean ? SCHEMA_CHARS.leanGettingStarted : SCHEMA_CHARS.legacyGettingStarted
+
+  const ovInput = baseSysChars + (ovSkill?.text.length ?? 0) + ovSchema + compactChars + userWrapperChars
+  // Per-service: ~1/N of the compact graph (sliced to one repo).
+  const svcUserChars = Math.round(compactChars / Math.max(repoCount, 1)) + userWrapperChars
+  const svcInput = baseSysChars + (svcSkill?.text.length ?? 0) + svcSchema + svcUserChars
+  const gsInput = baseSysChars + (gsSkill?.text.length ?? 0) + gsSchema + compactChars + userWrapperChars
+
+  let inputChars = 0
+  let outputTokens = 0
+  let callCount = 0
+  if (wantOverview) {
+    inputChars += ovInput
+    outputTokens += OUTPUT_TOK.overview + OUTPUT_TOK.integrations
+    callCount += 1
+  }
+  if (wantServices) {
+    inputChars += repoCount * svcInput
+    const svcOut = apiReference ? OUTPUT_TOK.serviceWithApiRef : OUTPUT_TOK.serviceWithoutApiRef
+    outputTokens += repoCount * svcOut
+    callCount += repoCount
+  }
+  if (wantGs) {
+    inputChars += gsInput
+    outputTokens += OUTPUT_TOK.gettingStarted
+    callCount += 1
+  }
+
+  return { inputTokens: tok(inputChars), outputTokens, callCount, compactChars, apiReference }
 }

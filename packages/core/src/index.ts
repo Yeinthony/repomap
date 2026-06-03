@@ -5,6 +5,6 @@ export { runGraphify, mergeGraphifyGraphs, isGraphifyAvailable } from './graphif
 export { detectEndpoints, detectHttpCalls, detectServiceUrls, buildRepoSummary } from './detectors/index.js'
 export { compactForLLM } from './serialize.js'
 export { generateHTML, generateMarkdown, slugify } from './render/html.js'
-export { loadDocsSkill, type LoadedSkill } from './render/docs-skill-loader.js'
+export { loadDocsSkill, clearDocsSkillCache, type LoadedSkill, type LoadDocsSkillOpts } from './render/docs-skill-loader.js'
 export { isDebugEnabled, debugDir, debugDump, debugDumpJson } from './debug.js'
 export { generateDocsParallel, type GenerateParallelOpts } from './generate-parallel.js'

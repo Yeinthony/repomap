@@ -36,11 +36,53 @@ export interface AIConfig {
   maxBudgetUsd?: number   // safety cap for claude-code provider
   /** Generate the symbol-level API reference section in service pages.
    *  Default false: omits ~4-5K output tokens per service. Turn on with
-   *  --with-api-ref for library/SDK repos that need it. */
+   *  --with-api-ref for library/SDK repos that need it.
+   *  Legacy flat key — promoted into `sections.apiReference` when both are
+   *  set, otherwise mirrors that field. */
   apiReference?: boolean
   /** Strategy override. Each adapter has a sensible default
    *  (claude: parallel, claude-code/ollama: single). */
   strategy?: 'parallel' | 'single'
+  /** Master switch: when true, the orchestrator uses a distilled skill, a
+   *  compact JSON schema, a smaller token budget for the compacted graph,
+   *  and finer per-service slices. Default false (legacy behaviour). */
+  lean?: boolean
+  /** Approximate token budget for `compactForLLM`. Defaults: 20000 (legacy)
+   *  or 8000 when `lean: true`. */
+  budget?: number
+  /** Skill section loading strategy.
+   *   - 'auto' (default): each parallel call loads only the references it
+   *     actually needs (overview → diataxis+diagrams+writing, service →
+   *     templates+examples+writing, etc.).
+   *   - 'full': legacy — concatenate every reference file (the historical
+   *     behaviour, kept for cases where the user wants the whole playbook).
+   *   - string[]: explicit list of section ids. */
+  skillSections?: 'auto' | 'full' | SkillSection[]
+  /** Which documentation pages to generate. Missing keys default to true
+   *  (or 'auto' for gettingStarted). Use these to skip whole sub-calls —
+   *  every skipped section directly removes one LLM call. */
+  sections?: DocSections
+}
+
+/** Identifier for a skill reference section. Maps 1:1 to a file in
+ *  `repomap-docs-writer/references/` (or `_compact/` when lean). */
+export type SkillSection =
+  | 'core'           // SKILL.md itself — always loaded
+  | 'templates'      // references/templates.md
+  | 'diataxis'       // references/diataxis-for-repos.md
+  | 'writing'        // references/writing-principles.md
+  | 'diagrams'       // references/diagrams.md
+  | 'examples'       // references/examples.md
+  | 'integration'    // references/repomap-integration.md (never auto-loaded into generation prompts)
+
+export interface DocSections {
+  overview?: boolean
+  integrations?: boolean
+  services?: boolean
+  apiReference?: boolean
+  /** 'auto' = include unless the workspace has > 8 services; true = always
+   *  generate; false = never generate. */
+  gettingStarted?: boolean | 'auto'
 }
 
 // ── Graphify graph (raw output from `graphify` CLI) ──────────────────────────

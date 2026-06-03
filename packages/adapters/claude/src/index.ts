@@ -31,7 +31,8 @@ const API_REFERENCE_FRAGMENT = `,
         ]
       }`
 
-function buildDocJsonSchema(opts: { withApiReference: boolean }): string {
+function buildDocJsonSchema(opts: { withApiReference: boolean; lean?: boolean }): string {
+  if (opts.lean) return buildCompactDocSchema(opts.withApiReference)
   const apiRef = opts.withApiReference ? API_REFERENCE_FRAGMENT : ''
   const apiRefNote = opts.withApiReference
     ? ''
@@ -112,6 +113,49 @@ GETTING STARTED GUIDANCE:
 - Code blocks MUST be syntactically valid and copy-pasteable.${apiRefNote}`
 }
 
+// Lean schema: TS-like one-shot description that the LLM can follow without
+// the JSON-pretty noise. Saves ~1-2K tokens per call vs the legacy form.
+function buildCompactDocSchema(withApiReference: boolean): string {
+  const apiRef = withApiReference
+    ? `;\n    apiReference: { intro: string; sections: Array<{ title: string; description?: string; symbols: Array<{ name: string; kind: 'function'|'class'|'interface'|'type'|'variable'|'method'; signature: string; description: string; params?: Array<{ name: string; type?: string; description: string; required: boolean; default?: string }>; returns?: string; sourceFile?: string; example?: string }> }> }`
+    : ''
+  const apiRefRule = withApiReference ? '' : '\n- OMIT apiReference entirely from every service object.'
+  return `// Documentation — produce a single JSON object matching this shape.
+type TutorialStep = {
+  heading: string; description: string;
+  code?: { language: string; source: string; caption?: string };
+  note?: string; noteKind?: 'tip' | 'warning' | 'info';
+};
+{
+  overview: { title: string; summary: string; analogy?: string; architecture: string /* mermaid */; keyConceptsFor: string[] };
+  services: Array<{
+    name: string; purpose: string; longDescription: string /* 3-5 paragraphs */;
+    analogy?: string; architecture: string /* mermaid */;
+    endpoints: Array<{ method: string; path: string; description: string; requestExample?: string; responseExample?: string }>;
+    events: Array<{ name: string; type: 'publishes' | 'subscribes'; description: string }>;
+    envVars: Array<{ name: string; description: string; required: boolean; example?: string }>;
+    gettingStarted: string /* step by step to run locally */;
+    examples: Array<{ title: string; description: string; code: string; language: string }>${apiRef}
+  }>;
+  integrations: {
+    summary: string; diagram: string /* mermaid sequence */;
+    flows: Array<{ name: string; description: string; steps: string[]; diagram: string }>;
+  };
+  gettingStarted: {
+    quickStart: { title: string; summary: string; steps: TutorialStep[] /* 3-5 */ };
+    installation: { title: string; summary: string; steps: TutorialStep[] };
+    firstProject: { title: string; summary: string; steps: TutorialStep[] /* 4-7 */ };
+    troubleshooting: { title: string; summary: string; items: Array<{ problem: string; cause?: string; solution: string; code?: { language: string; source: string } }> /* 5-10 */ };
+  };
+}
+
+Rules:
+- Produce ALL FOUR gettingStarted sub-sections; skip ONLY when no info is available.
+- Code blocks must be syntactically valid and copy-pasteable.
+- Use second-person ('you' / 'tú'). Plain text in descriptions (use \\n\\n for paragraph breaks).
+- Troubleshooting items mined from actual error messages in the README/code.${apiRefRule}`
+}
+
 export class ClaudeAdapter implements AIAdapter {
   private client: Anthropic
   // Caching makes per-section parallelism a clear win here.
@@ -164,16 +208,27 @@ export class ClaudeAdapter implements AIAdapter {
   /** Legacy single-call path. Used when strategy: 'single' is set. */
   private async generateDocsSingle(graph: CodeGraph, config: RepomapConfig, opts?: GenerateDocsOpts): Promise<Documentation> {
     const lang = config.language === 'es' ? 'Spanish' : 'English'
-    const compactRepr = compactForLLM(graph)
-    const withApiReference = config.ai.apiReference ?? false
-    const schema = buildDocJsonSchema({ withApiReference })
+    const lean = !!config.ai.lean
+    const compactRepr = compactForLLM(graph, { lean, budget: config.ai.budget })
+    const withApiReference = config.ai.sections?.apiReference ?? config.ai.apiReference ?? false
+    const schema = buildDocJsonSchema({ withApiReference, lean })
 
     const baseSystem = `You are a senior software architect and technical writer.
 Generate world-class documentation for a multi-service system.
 - Write in ${lang}
 - Output ONLY valid JSON, no markdown fences, no preamble`
 
-    const skill = loadDocsSkill()
+    // Single-call path: legacy 'full' skill unless `ai.skillSections` opts
+    // into a narrower set. Lean mode prefers `_compact/*.md` versions when
+    // present.
+    const skillSectionsCfg = config.ai.skillSections
+    const skill = loadDocsSkill(
+      skillSectionsCfg && skillSectionsCfg !== 'full' && skillSectionsCfg !== 'auto'
+        ? { sections: skillSectionsCfg, lean }
+        : skillSectionsCfg === 'auto'
+          ? { sections: ['templates', 'diataxis', 'writing', 'diagrams', 'examples'], lean }
+          : { lean }
+    )
 
     // One cached block holds both the playbook and the output schema.
     // Both are static across runs so they share a single cache checkpoint,
@@ -201,6 +256,11 @@ Generate documentation following the JSON schema defined in the system prompt. O
       model: 'claude-sonnet-4-20250514',
       max_tokens: 8000,
       apiReference: withApiReference,
+      lean,
+      budget: config.ai.budget ?? (lean ? 8000 : 20000),
+      skillChars: skill?.text.length ?? 0,
+      skillSectionsLoaded: skill?.sectionsLoaded ?? [],
+      schemaChars: schema.length,
       systemBlocksChars: systemBlocks.map((b: any) => b.text.length),
       userPromptChars: userPrompt.length,
       compactChars: compactRepr.length,

@@ -46,7 +46,8 @@ const API_REFERENCE_FRAGMENT = `,
         ]
       }`
 
-function buildDocJsonSchema(opts: { withApiReference: boolean }): string {
+function buildDocJsonSchema(opts: { withApiReference: boolean; lean?: boolean }): string {
+  if (opts.lean) return buildCompactDocSchema(opts.withApiReference)
   const apiRef = opts.withApiReference ? API_REFERENCE_FRAGMENT : ''
   const apiRefNote = opts.withApiReference
     ? ''
@@ -127,6 +128,48 @@ GETTING STARTED GUIDANCE:
 - Code blocks MUST be syntactically valid and copy-pasteable.${apiRefNote}`
 }
 
+// Lean schema: TS-like description that saves ~1-2K tokens per call vs the
+// legacy pretty-printed JSON. claude-code doesn't expose cache flags, so
+// every saved token translates directly into cheaper/faster calls.
+function buildCompactDocSchema(withApiReference: boolean): string {
+  const apiRef = withApiReference
+    ? `;\n    apiReference: { intro: string; sections: Array<{ title: string; description?: string; symbols: Array<{ name: string; kind: 'function'|'class'|'interface'|'type'|'variable'|'method'; signature: string; description: string; params?: Array<{ name: string; type?: string; description: string; required: boolean; default?: string }>; returns?: string; sourceFile?: string; example?: string }> }> }`
+    : ''
+  const apiRefRule = withApiReference ? '' : '\n- OMIT apiReference entirely from every service object.'
+  return `// Documentation — produce a single JSON object matching this shape.
+type TutorialStep = {
+  heading: string; description: string;
+  code?: { language: string; source: string; caption?: string };
+  note?: string; noteKind?: 'tip' | 'warning' | 'info';
+};
+{
+  overview: { title: string; summary: string; analogy?: string; architecture: string /* mermaid */; keyConceptsFor: string[] };
+  services: Array<{
+    name: string; purpose: string; longDescription: string /* 3-5 paragraphs */;
+    analogy?: string; architecture: string /* mermaid */;
+    endpoints: Array<{ method: string; path: string; description: string; requestExample?: string; responseExample?: string }>;
+    events: Array<{ name: string; type: 'publishes' | 'subscribes'; description: string }>;
+    envVars: Array<{ name: string; description: string; required: boolean; example?: string }>;
+    gettingStarted: string;
+    examples: Array<{ title: string; description: string; code: string; language: string }>${apiRef}
+  }>;
+  integrations: {
+    summary: string; diagram: string;
+    flows: Array<{ name: string; description: string; steps: string[]; diagram: string }>;
+  };
+  gettingStarted: {
+    quickStart: { title: string; summary: string; steps: TutorialStep[] /* 3-5 */ };
+    installation: { title: string; summary: string; steps: TutorialStep[] };
+    firstProject: { title: string; summary: string; steps: TutorialStep[] /* 4-7 */ };
+    troubleshooting: { title: string; summary: string; items: Array<{ problem: string; cause?: string; solution: string; code?: { language: string; source: string } }> /* 5-10 */ };
+  };
+}
+
+Rules:
+- Produce ALL FOUR gettingStarted sub-sections; skip ONLY when no info is available.
+- Code blocks must be valid and copy-pasteable. Use second-person ('you' / 'tú').${apiRefRule}`
+}
+
 export interface ClaudeCodeAdapterOptions {
   model?: string                // 'sonnet' | 'opus' | full id; default 'sonnet'
   binary?: string               // override path to `claude` CLI
@@ -176,10 +219,11 @@ export class ClaudeCodeAdapter implements AIAdapter {
 
   private async generateDocsSingle(graph: CodeGraph, config: RepomapConfig, opts?: GenerateDocsOpts): Promise<Documentation> {
     const lang = config.language === 'es' ? 'Spanish' : 'English'
-    const compact = compactForLLM(graph)
-    const skill = loadDocsSkill()
-    const withApiReference = config.ai.apiReference ?? false
-    const schema = buildDocJsonSchema({ withApiReference })
+    const lean = !!config.ai.lean
+    const compact = compactForLLM(graph, { lean, budget: config.ai.budget })
+    const skill = loadDocsSkill({ lean })
+    const withApiReference = config.ai.sections?.apiReference ?? config.ai.apiReference ?? false
+    const schema = buildDocJsonSchema({ withApiReference, lean })
 
     const baseSystem = [
       `You are a senior software architect and technical writer.`,
@@ -209,6 +253,11 @@ Generate documentation following the JSON schema defined in the system prompt. O
       binary: this.binary,
       maxBudgetUsd: this.maxBudgetUsd,
       apiReference: withApiReference,
+      lean,
+      budget: config.ai.budget ?? (lean ? 8000 : 20000),
+      skillChars: skill?.text.length ?? 0,
+      skillSectionsLoaded: skill?.sectionsLoaded ?? [],
+      schemaChars: schema.length,
       systemPromptChars: systemPrompt.length,
       userPromptChars: userPrompt.length,
       compactChars: compact.length,

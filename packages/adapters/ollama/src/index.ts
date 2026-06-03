@@ -119,8 +119,9 @@ export class OllamaAdapter implements AIAdapter {
 
   private async generateDocsSingle(graph: CodeGraph, config: RepomapConfig): Promise<Documentation> {
     const lang = config.language === 'es' ? 'Spanish' : 'English'
-    const compact = compactForLLM(graph)
-    const skill = loadDocsSkill()
+    const lean = !!config.ai.lean
+    const compact = compactForLLM(graph, { lean, budget: config.ai.budget })
+    const skill = loadDocsSkill({ lean })
 
     const baseSystem = [
       `You are a senior software architect and technical writer.`,

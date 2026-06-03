@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url'
 import yaml from 'yaml'
 import { Orchestrator, isGraphifyAvailable } from '@repomap/core'
 import type { RepomapConfig } from '@repomap/core'
+import { registerWorkspace, findWorkspacesForSource, type WorkspaceEntry } from './workspace-registry.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // REPOMAP CLI
@@ -37,8 +38,8 @@ const cliDict = {
     waitingModel: (elapsed: string) => `Waiting for the model… ${elapsed}`,
     waitingHintSlow: 'taking longer than usual — check your quota: `claude --version`',
     waitingHintStuck: 'this looks stuck — Ctrl+C and try `repomap doctor`',
-    llmCallStart: (model: string, strategy: string, apiRef: string, tokens: string) =>
-      `→ Sending ~${tokens} input tokens · ${model} · strategy: ${strategy} · apiReference: ${apiRef}`,
+    llmCallStart: (model: string, strategy: string, apiRef: string, inTokens: string, outTokens: string, calls: number) =>
+      `→ ~${inTokens} in + ~${outTokens} out tokens · ${calls} call${calls === 1 ? '' : 's'} · ${model} · ${strategy} · apiReference: ${apiRef}`,
     resultMeta: (input: string, output: string, cost: string) =>
       `${input} → ${output} tokens · ${cost}`,
     resultMetaErrSpent: (cost: string) => `(spent ${cost} before the error)`,
@@ -101,11 +102,23 @@ const cliDict = {
     initProbeFailed: (why: string) => `Probe failed (${why}) — falling back to free-text input.`,
     initProbeNoModels: 'Server responded but no models found. Type a custom ID.',
     initAskOllamaUrl: 'Ollama server URL',
-    initAskOutputDir: 'Output directory',
+    initAskOutputDir: 'Workspace directory (will hold the config + a docs/ subdir)',
     initAskFormat: 'Output format',
     initFormatHtml: 'html — full site with mermaid, syntax highlighting, file tree',
     initFormatMarkdown: 'markdown — flat .md files, Notion/Obsidian/GitBook friendly',
     initFormatJson: 'json — raw docs.json for programmatic use',
+    initAskSections: 'Sections to include in the documentation',
+    initSectionsHelp: '(Space to toggle · Enter to confirm)',
+    initSectionOverview: 'Overview — main page with summary and overall architecture',
+    initSectionIntegrations: 'Integrations — how services communicate with each other',
+    initSectionServices: 'Per-service pages — one page per repo (endpoints, env vars, events)',
+    initSectionApiRef: 'API Reference — exported symbols with signatures (~30% more tokens)',
+    initSectionGettingStarted: 'Getting Started — quickstart, install, tutorial, troubleshooting',
+    initSectionsAtLeastOne: 'Select at least Overview or Per-service pages.',
+    initSectionsBigProjectTip: 'Tip: generating every section for a large workspace can take 3–5 min. Consider enabling lean mode below.',
+    initAskLean: 'Prompt optimization',
+    initLeanOn: 'Lean — distilled skill + compact schema · ~70% fewer input tokens (recommended)',
+    initLeanOff: 'Standard — full skill + verbose schema · slower but slightly more thorough',
     initPreviewHeader: 'Preview of repomap.config.yml',
     initConfirmWrite: 'Write this config?',
     initAborted: 'Aborted — no file written.',
@@ -180,6 +193,9 @@ const cliDict = {
     doctorGraphifyFix: 'pipx install graphifyy   (or)   uv tool install graphifyy',
     doctorConfigOk: (rel: string) => `Config: ${rel}`,
     doctorConfigMissing: 'No repomap.config.yml found',
+    configFromRegistry: (p: string) => `using workspace config: ${p}  (workspace registry)`,
+    configFromRegistryMulti: (n: number) => `(${n} workspaces match this source — picked the most recent)`,
+    configFromRegistryPickHint: 'pass -c <path> to pick a different one',
     doctorConfigInvalid: (msg: string) => `Config file is invalid YAML: ${msg}`,
     doctorConfigFix: 'Run `repomap init` to create a starter config',
     doctorReposOk: (n: number, names: string) => `Repos (${n}): ${names}`,
@@ -211,8 +227,8 @@ const cliDict = {
     waitingModel: (elapsed: string) => `Esperando respuesta del modelo… ${elapsed}`,
     waitingHintSlow: 'está tardando más de lo normal — revisa tu cuota con `claude --version`',
     waitingHintStuck: 'parece atorado — Ctrl+C y prueba `repomap doctor`',
-    llmCallStart: (model: string, strategy: string, apiRef: string, tokens: string) =>
-      `→ Enviando ~${tokens} tokens · ${model} · strategy: ${strategy} · apiReference: ${apiRef}`,
+    llmCallStart: (model: string, strategy: string, apiRef: string, inTokens: string, outTokens: string, calls: number) =>
+      `→ ~${inTokens} in + ~${outTokens} out tokens · ${calls} call${calls === 1 ? '' : 's'} · ${model} · ${strategy} · apiReference: ${apiRef}`,
     resultMeta: (input: string, output: string, cost: string) =>
       `${input} → ${output} tokens · ${cost}`,
     resultMetaErrSpent: (cost: string) => `(gastaste ${cost} antes del error)`,
@@ -275,11 +291,23 @@ const cliDict = {
     initProbeFailed: (why: string) => `Probe falló (${why}) — paso a input de texto libre.`,
     initProbeNoModels: 'El server respondió pero no hay modelos. Escribe un ID a mano.',
     initAskOllamaUrl: 'URL del server Ollama',
-    initAskOutputDir: 'Carpeta de salida',
+    initAskOutputDir: 'Carpeta de workspace (contendrá el config y un subdir docs/)',
     initAskFormat: 'Formato de salida',
     initFormatHtml: 'html — sitio completo con mermaid, syntax highlighting, file tree',
     initFormatMarkdown: 'markdown — archivos .md planos, compatible con Notion/Obsidian/GitBook',
     initFormatJson: 'json — docs.json crudo para uso programático',
+    initAskSections: 'Secciones a incluir en la documentación',
+    initSectionsHelp: '(Espacio para alternar · Enter para confirmar)',
+    initSectionOverview: 'Overview — página principal con resumen y arquitectura general',
+    initSectionIntegrations: 'Integraciones — cómo los servicios se comunican entre sí',
+    initSectionServices: 'Páginas por servicio — una página por repo (endpoints, env vars, eventos)',
+    initSectionApiRef: 'API Reference — símbolos exportados con firmas (~30 % más tokens)',
+    initSectionGettingStarted: 'Getting Started — quickstart, instalación, tutorial, troubleshooting',
+    initSectionsAtLeastOne: 'Selecciona al menos Overview o Páginas por servicio.',
+    initSectionsBigProjectTip: 'Tip: generar todas las secciones para un workspace grande puede tardar 3–5 min. Considera activar el modo lean abajo.',
+    initAskLean: 'Optimización del prompt',
+    initLeanOn: 'Lean — skill destilado + schema compacto · ~70 % menos tokens de entrada (recomendado)',
+    initLeanOff: 'Estándar — skill completo + schema verboso · más lento pero algo más detallado',
     initPreviewHeader: 'Preview del repomap.config.yml',
     initConfirmWrite: '¿Escribir esta config?',
     initAborted: 'Cancelado — no se escribió nada.',
@@ -354,6 +382,9 @@ const cliDict = {
     doctorGraphifyFix: 'pipx install graphifyy   (o)   uv tool install graphifyy',
     doctorConfigOk: (rel: string) => `Config: ${rel}`,
     doctorConfigMissing: 'No se encontró repomap.config.yml',
+    configFromRegistry: (p: string) => `usando config del workspace: ${p}  (registro de workspaces)`,
+    configFromRegistryMulti: (n: number) => `(${n} workspaces apuntan a este source — elegí el más reciente)`,
+    configFromRegistryPickHint: 'pasa -c <path> si querés elegir otro',
     doctorConfigInvalid: (msg: string) => `El archivo de config tiene YAML inválido: ${msg}`,
     doctorConfigFix: 'Corre `repomap init` para crear una config inicial',
     doctorReposOk: (n: number, names: string) => `Repos (${n}): ${names}`,
@@ -387,7 +418,7 @@ function tCli(lang: CliLang, key: keyof typeof cliDict.en): any {
 function resolveLang(options: any): CliLang {
   if (options?.lang === 'es' || options?.lang === 'en') return options.lang
   try {
-    const configPath = path.resolve(options?.config ?? 'repomap.config.yml')
+    const configPath = findConfigPath(options).path
     if (fs.existsSync(configPath)) {
       const cfg = yaml.parse(fs.readFileSync(configPath, 'utf-8'))
       if (cfg?.language === 'es' || cfg?.language === 'en') return cfg.language
@@ -445,7 +476,7 @@ program
     }
 
     if (options.verbose) {
-      const configPath = path.resolve(options.config ?? 'repomap.config.yml')
+      const configPath = findConfigPath(options).path
       const configShown = fs.existsSync(configPath) ? path.relative(process.cwd(), configPath) || configPath : '(none, using flags)'
       console.log(chalk.dim('  ' + tCli(lang, 'verboseConfigSource')(configShown)))
       console.log(chalk.dim('  ' + tCli(lang, 'verboseAdapter')(config.ai.provider, config.ai.model ?? 'sonnet')))
@@ -485,12 +516,15 @@ program
               // Print the call summary as a standalone line BEFORE the
               // spinner starts. The user sees what's being sent and gets
               // an anchor for the elapsed counter that follows.
-              const tokensEstimate = formatTokensApprox(phase.compactChars)
+              // The estimate includes system (skill + schema) + user
+              // (compact graph), summed across all calls when parallel.
               console.log(chalk.dim('  ' + tCli(lang, 'llmCallStart')(
                 chalk.cyan(phase.model),
                 phase.strategy,
                 phase.apiReference ? 'on' : 'off',
-                chalk.bold(tokensEstimate)
+                chalk.bold(formatTokensCompact(phase.inputTokensEstimate)),
+                chalk.bold(formatTokensCompact(phase.outputTokensEstimate)),
+                phase.callCount
               )))
               spinner.start(chalk.dim(tCli(lang, 'askingModel')))
               break
@@ -907,8 +941,10 @@ program
       checks.push({ level: 'fail', label: tCli(lang, 'doctorGraphifyMissing'), fix: tCli(lang, 'doctorGraphifyFix') })
     }
 
-    // 3. Config file
-    const configPath = path.resolve(options.config ?? 'repomap.config.yml')
+    // 3. Config file — consults workspace registry when cwd has no yml.
+    const foundConfig = findConfigPath(options)
+    const configPath = foundConfig.path
+    printRegistryHint(foundConfig, lang)
     let config: RepomapConfig | null = null
     if (!fs.existsSync(configPath)) {
       checks.push({ level: 'warn', label: tCli(lang, 'doctorConfigMissing'), fix: tCli(lang, 'doctorConfigFix') })
@@ -1034,11 +1070,16 @@ program
     if (options.output) {
       outDir = path.resolve(options.output)
     } else {
-      const configPath = path.resolve(options.config ?? 'repomap.config.yml')
+      const foundCfg = findConfigPath(options)
+      printRegistryHint(foundCfg, lang)
+      const configPath = foundCfg.path
       if (fs.existsSync(configPath)) {
         try {
           const cfg = yaml.parse(fs.readFileSync(configPath, 'utf-8'))
-          outDir = path.resolve(cfg?.output?.path ?? './repomap-docs')
+          // Resolve relative output paths against the yml's dir, not cwd —
+          // matches loadConfig's behavior so `clean` and `generate` agree.
+          const rawOut = cfg?.output?.path ?? './repomap-docs'
+          outDir = path.isAbsolute(rawOut) ? rawOut : path.resolve(path.dirname(configPath), rawOut)
         } catch {
           outDir = path.resolve('./repomap-docs')
         }
@@ -1153,7 +1194,7 @@ hooksCmd
   .action((options) => {
     const lang = resolveLang(options)
     const config = loadConfig(options)
-    const workspaceDir = path.dirname(path.resolve(options.config ?? 'repomap.config.yml'))
+    const workspaceDir = path.dirname(findConfigPath(options).path)
     const script = buildHookScript(workspaceDir)
 
     printBanner()
@@ -1279,13 +1320,18 @@ program
     console.log('')
 
     // Resolve config leniently — don't exit when missing.
-    const configPath = path.resolve(options.config ?? 'repomap.config.yml')
+    const foundStatus = findConfigPath(options)
+    printRegistryHint(foundStatus, lang)
+    const configPath = foundStatus.path
     const hasConfig = fs.existsSync(configPath)
     let config: RepomapConfig | null = null
     if (hasConfig) {
       try { config = yaml.parse(fs.readFileSync(configPath, 'utf-8')) as RepomapConfig } catch { /* ignore */ }
     }
-    const outDir = path.resolve(config?.output?.path ?? './repomap-docs')
+    const rawOutStatus = config?.output?.path ?? './repomap-docs'
+    const outDir = hasConfig && !path.isAbsolute(rawOutStatus)
+      ? path.resolve(path.dirname(configPath), rawOutStatus)
+      : path.resolve(rawOutStatus)
 
     const PAD = 12
     const configDisplay = hasConfig
@@ -1366,28 +1412,36 @@ program
   .option('--lang <language>', 'Documentation language: en | es')
   .option('-y, --yes', 'Skip interactive flow — write the static template with placeholders')
   .action(async (options) => {
-    const configPath = 'repomap.config.yml'
     const explicitLang: CliLang | undefined = (options.lang === 'es' || options.lang === 'en') ? options.lang : undefined
 
-    // Non-TTY (CI / piped) → static template, no questions
+    // Non-TTY (CI / piped) → static template, no questions. The workspace
+    // pattern still applies: write yml at ./repomap-docs/repomap.config.yml
+    // so the template lands outside the source repo it documents.
     if (options.yes || !process.stdin.isTTY) {
       if (!options.yes && !process.stdin.isTTY) {
         console.log(chalk.yellow('  ' + tCli(explicitLang ?? 'en', 'initNoTty')))
       }
       const lang: CliLang = explicitLang ?? 'en'
+      const workspaceDir = path.resolve('./repomap-docs')
+      const configPath = path.join(workspaceDir, 'repomap.config.yml')
       if (fs.existsSync(configPath)) {
         console.log(chalk.yellow(tCli(lang, 'initExists')))
         return
       }
+      fs.mkdirSync(workspaceDir, { recursive: true })
       fs.writeFileSync(configPath, initTemplate(lang))
+      // No source paths to register for the static template (the user will
+      // fill them in by hand). Skip the registry write — they'll re-register
+      // on the next interactive `init` if they want auto-discovery.
       console.log(chalk.green(tCli(lang, 'initCreated')))
+      console.log(chalk.dim('  ' + path.relative(process.cwd(), configPath)))
       console.log(chalk.dim(tCli(lang, 'initEditPrompt')))
-      console.log(chalk.cyan('  repomap generate'))
+      console.log(chalk.cyan(`  cd ${path.relative(process.cwd(), workspaceDir) || '.'} && repomap generate`))
       return
     }
 
     try {
-      await runInteractiveInit(configPath, explicitLang)
+      await runInteractiveInit(explicitLang)
     } catch (err: any) {
       // @inquirer/prompts throws ExitPromptError on Ctrl+C — swallow it
       // and exit cleanly instead of dumping a stack trace at the user.
@@ -1400,7 +1454,7 @@ program
     }
   })
 
-async function runInteractiveInit(configPath: string, explicitLang?: CliLang): Promise<void> {
+async function runInteractiveInit(explicitLang?: CliLang): Promise<void> {
   const { input, select, checkbox, confirm } = await import('@inquirer/prompts')
 
   printBanner()
@@ -1409,17 +1463,8 @@ async function runInteractiveInit(configPath: string, explicitLang?: CliLang): P
   console.log(chalk.bold('  ' + tCli(startingLang, 'initHeader')))
   console.log('')
 
-  // Existing-file guard with overwrite option
-  if (fs.existsSync(configPath)) {
-    const overwrite = await confirm({
-      message: tCli(startingLang, 'initOverwrite'),
-      default: false,
-    })
-    if (!overwrite) {
-      console.log(chalk.dim('  ' + tCli(startingLang, 'initAbortedExisting')))
-      return
-    }
-  }
+  // Existing-file guard moved to after the workspace dir is chosen (step 8).
+  // The yml now lives at <workspace>/repomap.config.yml, not in cwd.
 
   // 1. Language
   const lang: CliLang = explicitLang ?? (await select({
@@ -1522,11 +1567,33 @@ async function runInteractiveInit(configPath: string, explicitLang?: CliLang): P
 
   const model = await pickModel(provider, baseUrl, lang, select, input)
 
-  // 8. Output
-  const outputPath = (await input({
+  // 8. Workspace dir — the dir that will hold the config AND a docs/ subdir.
+  // Keeping the yml *outside* the docs subdir means `repomap clean --all` can
+  // wipe the docs without taking the config with it. Source repos stay
+  // untouched because their absolute paths are baked into the yml below.
+  const workspaceInput = (await input({
     message: tCli(lang, 'initAskOutputDir'),
     default: './repomap-docs',
   })).trim() || './repomap-docs'
+  const workspaceDir = path.resolve(workspaceInput)
+  const outputPath = path.join(workspaceDir, 'docs')
+  const configPath = path.join(workspaceDir, 'repomap.config.yml')
+  // Repo paths get absolutized so the yml is portable: `repomap generate` works
+  // regardless of where the user cd's to before running it.
+  repos.forEach((r) => { r.path = path.resolve(r.path) })
+
+  // Existing-file guard (relocated from the top of init now that the yml lives
+  // inside the workspace dir, not in cwd).
+  if (fs.existsSync(configPath)) {
+    const overwrite = await confirm({
+      message: tCli(lang, 'initOverwrite'),
+      default: false,
+    })
+    if (!overwrite) {
+      console.log(chalk.dim('  ' + tCli(lang, 'initAbortedExisting')))
+      return
+    }
+  }
 
   const format = await select({
     message: tCli(lang, 'initAskFormat'),
@@ -1539,9 +1606,26 @@ async function runInteractiveInit(configPath: string, explicitLang?: CliLang): P
     theme: { helpMode: 'never' },
   })
 
-  // 9. Build + preview + confirm
+  // 8. Section picker — which doc sections to generate. Each unchecked
+  // section removes one LLM call from the run.
+  const sections = await pickDocSections(checkbox, lang, repos.length)
+
+  // 9. Lean mode — opt-in token optimization. Recommended (especially for
+  // large workspaces) since smoke-tested savings are ~70% input tokens at
+  // matching quality. User can still flip it later in the yml.
+  const lean = await select({
+    message: tCli(lang, 'initAskLean'),
+    choices: [
+      { value: true, name: tCli(lang, 'initLeanOn') },
+      { value: false, name: tCli(lang, 'initLeanOff') },
+    ],
+    default: true,
+    theme: { helpMode: 'never' },
+  })
+
+  // 10. Build + preview + confirm
   const yamlText = buildConfigYaml({
-    repos, provider, model, baseUrl, outputPath, format, lang,
+    repos, provider, model, baseUrl, outputPath, format, lang, sections, lean,
   })
 
   console.log('')
@@ -1559,12 +1643,19 @@ async function runInteractiveInit(configPath: string, explicitLang?: CliLang): P
     return
   }
 
+  fs.mkdirSync(workspaceDir, { recursive: true })
   fs.writeFileSync(configPath, yamlText)
+  // Record the workspace → sources mapping so `repomap doctor` / `generate`
+  // run from a source dir later can auto-discover this yml without needing -c.
+  registerWorkspace(configPath, repos.map((r) => r.path))
+  const relConfig = path.relative(process.cwd(), configPath) || configPath
+  const relWorkspace = path.relative(process.cwd(), workspaceDir) || '.'
   console.log(chalk.green('  ' + tCli(lang, 'initCreated')))
+  console.log(chalk.dim('  ' + relConfig))
   console.log('')
   console.log(chalk.dim('  ' + tCli(lang, 'initDoneNext')))
   console.log(chalk.cyan(tCli(lang, 'initDoctorHint')))
-  console.log(chalk.cyan(tCli(lang, 'initGenerateHint')))
+  console.log(chalk.cyan(`  cd ${relWorkspace} && repomap generate`))
 }
 
 /**
@@ -1733,6 +1824,79 @@ interface BuildConfigInput {
   outputPath: string
   format: 'html' | 'markdown' | 'json'
   lang: CliLang
+  sections: WizardSections
+  lean: boolean
+}
+
+interface WizardSections {
+  overview: boolean
+  integrations: boolean
+  services: boolean
+  apiReference: boolean
+  gettingStarted: boolean
+}
+
+const SECTION_DEFAULTS: WizardSections = {
+  overview: true,
+  integrations: true,
+  services: true,
+  apiReference: false,
+  gettingStarted: true,
+}
+
+/**
+ * Wizard step: ask the user which documentation sections to generate.
+ * Each unchecked section removes one LLM call from `repomap generate`.
+ * The `checkbox` prompt is from @inquirer/prompts and is already imported
+ * at the wizard's top.
+ */
+async function pickDocSections(
+  checkboxFn: any,
+  lang: CliLang,
+  repoCount: number
+): Promise<WizardSections> {
+  // Loop until at least Overview or Per-service pages is selected.
+  while (true) {
+    const picked: string[] = await checkboxFn({
+      message: tCli(lang, 'initAskSections') + ' ' + chalk.dim(tCli(lang, 'initSectionsHelp')),
+      choices: [
+        { value: 'overview', name: tCli(lang, 'initSectionOverview'), checked: SECTION_DEFAULTS.overview },
+        { value: 'integrations', name: tCli(lang, 'initSectionIntegrations'), checked: SECTION_DEFAULTS.integrations },
+        { value: 'services', name: tCli(lang, 'initSectionServices'), checked: SECTION_DEFAULTS.services },
+        { value: 'apiReference', name: tCli(lang, 'initSectionApiRef'), checked: SECTION_DEFAULTS.apiReference },
+        { value: 'gettingStarted', name: tCli(lang, 'initSectionGettingStarted'), checked: SECTION_DEFAULTS.gettingStarted },
+      ],
+      theme: { helpMode: 'never' },
+    })
+    const sel: WizardSections = {
+      overview: picked.includes('overview'),
+      integrations: picked.includes('integrations'),
+      services: picked.includes('services'),
+      apiReference: picked.includes('apiReference'),
+      gettingStarted: picked.includes('gettingStarted'),
+    }
+    if (!sel.overview && !sel.services) {
+      console.log(chalk.yellow('  ' + tCli(lang, 'initSectionsAtLeastOne')))
+      continue
+    }
+    const allOn = sel.overview && sel.integrations && sel.services && sel.apiReference && sel.gettingStarted
+    if (allOn && repoCount > 5) {
+      console.log(chalk.dim('  ' + tCli(lang, 'initSectionsBigProjectTip')))
+    }
+    return sel
+  }
+}
+
+/** Emit only the keys that differ from defaults, so the yml stays minimal. */
+function sectionsYamlBlock(s: WizardSections): string[] {
+  const diffs: Array<[keyof WizardSections, boolean]> = []
+  for (const k of Object.keys(SECTION_DEFAULTS) as Array<keyof WizardSections>) {
+    if (s[k] !== SECTION_DEFAULTS[k]) diffs.push([k, s[k]])
+  }
+  if (diffs.length === 0) return []
+  const lines = ['  sections:']
+  for (const [k, v] of diffs) lines.push(`    ${k}: ${v}`)
+  return lines
 }
 
 function buildConfigYaml(c: BuildConfigInput): string {
@@ -1755,6 +1919,12 @@ function buildConfigYaml(c: BuildConfigInput): string {
   if (c.model) lines.push(`  model: ${c.model}`)
   if (c.provider === 'ollama' && c.baseUrl) lines.push(`  baseUrl: ${c.baseUrl}`)
   if (c.provider === 'claude-code') lines.push(`  # maxBudgetUsd: 1.00   # safety cap per call`)
+  lines.push(...sectionsYamlBlock(c.sections))
+  if (c.lean) {
+    lines.push(`  lean: true                  # shrink prompts (distilled skill + compact schema)`)
+  } else {
+    lines.push(`  # lean: true                # shrink prompts (distilled skill + compact schema)`)
+  }
   lines.push('')
   lines.push(`language: ${c.lang}`)
   lines.push('watch: false')
@@ -1788,7 +1958,7 @@ repos:
     description: <una línea opcional>
 
 output:
-  path: ./repomap-docs        # dónde se escribirá el sitio
+  path: ./docs                # subdir del workspace (al lado de este yml)
   format: html                # html | markdown | json
 
 ai:
@@ -1797,6 +1967,14 @@ ai:
   # baseUrl: http://localhost:11434   # solo ollama — URL del server
   # maxBudgetUsd: 1.00        # tope de gasto por llamada (solo claude-code)
   # binary: claude            # ruta al binario claude si no está en PATH (solo claude-code)
+  # lean: true                # skill distilada + schema compacto + budget reducido (más rápido, más barato)
+  # budget: 8000              # tokens aproximados para compactForLLM (default: 20000 / 8000 con lean)
+  # sections:                 # qué páginas generar (omite las que no quieras = menos calls)
+  #   overview: true
+  #   integrations: true
+  #   services: true
+  #   apiReference: false
+  #   gettingStarted: auto    # auto | true | false (auto omite si hay > 8 servicios)
 
 language: es                  # 'es' | 'en' — idioma de la doc generada
 watch: false                  # true → 'generate' queda en modo watch al terminar
@@ -1819,7 +1997,7 @@ repos:
     description: <optional one-liner>
 
 output:
-  path: ./repomap-docs        # where the site is written
+  path: ./docs                # subdir of the workspace (next to this yml)
   format: html                # html | markdown | json
 
 ai:
@@ -1828,6 +2006,14 @@ ai:
   # baseUrl: http://localhost:11434   # ollama only — server URL
   # maxBudgetUsd: 1.00        # safety cap per call (claude-code only)
   # binary: claude            # path to claude binary if not on PATH (claude-code only)
+  # lean: true                # distilled skill + compact schema + tighter budget (faster, cheaper)
+  # budget: 8000              # approximate token budget for compactForLLM (default: 20000 / 8000 with lean)
+  # sections:                 # which pages to generate (skip any to drop one LLM call)
+  #   overview: true
+  #   integrations: true
+  #   services: true
+  #   apiReference: false
+  #   gettingStarted: auto    # auto | true | false (auto skips when > 8 services)
 
 language: en                  # 'en' | 'es' — language of the generated docs
 watch: false                  # true → 'generate' stays in watch mode after finishing
@@ -1838,12 +2024,72 @@ program.parse()
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+type ConfigSource = 'flag' | 'cwd' | 'registry' | 'missing'
+
+interface FoundConfig {
+  path: string
+  source: ConfigSource
+  /** When source === 'registry' and more than one workspace matches cwd. */
+  alternatives?: WorkspaceEntry[]
+}
+
+/**
+ * Resolve where to read repomap.config.yml from.
+ *
+ * Order:
+ *   1. Explicit `-c <path>` flag.
+ *   2. `repomap.config.yml` in cwd (legacy "config-in-source" pattern).
+ *   3. Workspace registry — find a workspace whose `sourcePaths` include
+ *      cwd (or any ancestor of cwd). Most-recent first.
+ *
+ * Falls back to a hypothetical cwd path with source='missing' so callers
+ * can keep their existing "file doesn't exist" branch.
+ */
+function findConfigPath(options: any): FoundConfig {
+  // commander's default keeps options.config === 'repomap.config.yml' even
+  // when the user didn't pass -c, so we treat the bare default as "no flag".
+  const flagRaw = typeof options?.config === 'string' ? options.config : ''
+  const explicitFlag = flagRaw && flagRaw !== 'repomap.config.yml'
+  if (explicitFlag) {
+    return { path: path.resolve(flagRaw), source: 'flag' }
+  }
+  const cwdPath = path.resolve('repomap.config.yml')
+  if (fs.existsSync(cwdPath)) {
+    return { path: cwdPath, source: 'cwd' }
+  }
+  const matches = findWorkspacesForSource(process.cwd())
+  if (matches.length > 0) {
+    return {
+      path: matches[0].configPath,
+      source: 'registry',
+      alternatives: matches.length > 1 ? matches : undefined,
+    }
+  }
+  return { path: cwdPath, source: 'missing' }
+}
+
+/** Print a dim hint when the config was picked via the workspace registry,
+ *  so the user is never surprised about which yml is being used. */
+function printRegistryHint(found: FoundConfig, lang: CliLang): void {
+  if (found.source !== 'registry') return
+  const rel = path.relative(process.cwd(), found.path) || found.path
+  console.log(chalk.dim('  ' + tCli(lang, 'configFromRegistry')(rel)))
+  if (found.alternatives && found.alternatives.length > 1) {
+    console.log(chalk.dim('  ' + tCli(lang, 'configFromRegistryMulti')(found.alternatives.length)))
+    for (const alt of found.alternatives) {
+      console.log(chalk.dim('    · ' + (path.relative(process.cwd(), alt.configPath) || alt.configPath)))
+    }
+    console.log(chalk.dim('  ' + tCli(lang, 'configFromRegistryPickHint')))
+  }
+}
+
 // Precedence: CLI flags > config file > built-in defaults.
 // A config file is loaded if present; CLI flags then override the
 // corresponding fields. If no config exists and --repos is passed,
 // a minimal config is synthesized from flags + defaults.
 function loadConfig(options: any): RepomapConfig {
-  const configPath = path.resolve(options.config ?? 'repomap.config.yml')
+  const found = findConfigPath(options)
+  const configPath = found.path
   const fileExists = fs.existsSync(configPath)
   const hasReposFlag = Array.isArray(options.repos) && options.repos.length > 0
 
@@ -1851,6 +2097,19 @@ function loadConfig(options: any): RepomapConfig {
   if (fileExists) {
     const raw = fs.readFileSync(configPath, 'utf-8')
     config = yaml.parse(raw) as RepomapConfig
+    // Resolve relative paths against the yml's directory, not cwd. This makes
+    // the workspace pattern robust: `output.path: ./docs` always means
+    // <workspace>/docs even when the user runs `repomap generate -c
+    // /abs/path/to/repomap.config.yml` from somewhere else.
+    const configDir = path.dirname(configPath)
+    const resolveAgainstConfig = (p: string): string =>
+      path.isAbsolute(p) ? p : path.resolve(configDir, p)
+    if (Array.isArray(config.repos)) {
+      config.repos = config.repos.map((r) => ({ ...r, path: resolveAgainstConfig(r.path) }))
+    }
+    if (config.output?.path) {
+      config.output = { ...config.output, path: resolveAgainstConfig(config.output.path) }
+    }
   } else if (hasReposFlag) {
     config = {
       repos: [],
@@ -2040,14 +2299,6 @@ function formatElapsed(sec: number): string {
   const m = Math.floor(sec / 60)
   const s = sec % 60
   return `${m}m ${s.toString().padStart(2, '0')}s`
-}
-
-/** Rough token estimate from a char count of the compact graph.
- *  ~3.5 chars/token covers a mix of identifiers + Spanish/English prose. */
-function formatTokensApprox(chars: number): string {
-  const tokens = Math.round(chars / 3.5)
-  if (tokens < 1000) return `${tokens}`
-  return `${(tokens / 1000).toFixed(1)}K`
 }
 
 /** Compact token formatter for exact counts coming from the API/envelope. */

@@ -10,138 +10,230 @@ import type { CodeGraph, GraphifyGraph, PackageMeta, RepoSummary } from './types
 //   3. STATIC SIGNALS      — endpoints, env, deps, docker service.
 //   4. STRUCTURAL DERIVATIVES — top concepts, cross-repo HTTP, cross-repo
 //      structural edges, communities. Useful but more prone to misreading.
-// Aim: ~5-15% of the source code size; total ≈ 8-20K tokens.
+// Aim: ~5-15% of the source code size; total ≈ 8-20K tokens (legacy) or
+// ≈ 4-8K tokens (lean).
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function compactForLLM(graph: CodeGraph): string {
-  const lines: string[] = []
+export interface CompactForLLMOpts {
+  /** Approximate token budget. Hard caps shrink, low-priority blocks drop
+   *  when the running estimate exceeds the budget. */
+  budget?: number
+  /** When true, applies aggressive caps (fewer files/symbols/edges) on top
+   *  of the budget — same content shape, less of it. */
+  lean?: boolean
+}
 
-  // ── 1. Workspace context ──
+interface Caps {
+  endpointsHttp: number
+  endpointsEvent: number
+  serviceUrls: number
+  dependencies: number
+  files: number
+  symbolsPerFile: number
+  membersPerSymbol: number
+  crossRepoEdges: number
+  communities: number
+  readmeChars: number
+}
+
+const LEGACY_CAPS: Caps = {
+  endpointsHttp: 30,
+  endpointsEvent: 20,
+  serviceUrls: 15,
+  dependencies: 15,
+  files: 25,
+  symbolsPerFile: 8,
+  membersPerSymbol: 8,
+  crossRepoEdges: 50,
+  communities: 8,
+  readmeChars: Infinity,
+}
+
+const LEAN_CAPS: Caps = {
+  endpointsHttp: 20,
+  endpointsEvent: 12,
+  serviceUrls: 10,
+  dependencies: 10,
+  files: 12,
+  symbolsPerFile: 5,
+  membersPerSymbol: 5,
+  crossRepoEdges: 20,
+  communities: 4,
+  readmeChars: 1500,
+}
+
+// Rough proxy: ~4 chars per token. Used only to enforce the soft budget.
+const TOKENS_PER_CHAR = 0.25
+
+export function compactForLLM(graph: CodeGraph, opts: CompactForLLMOpts = {}): string {
+  const lean = !!opts.lean
+  const caps = lean ? LEAN_CAPS : LEGACY_CAPS
+  const budget = opts.budget ?? (lean ? 8000 : 20000)
+  const charBudget = Math.round(budget / TOKENS_PER_CHAR)
+  const lines: string[] = []
+  let charsUsed = 0
+
+  const remaining = (): number => charBudget - charsUsed
+  const push = (line: string): boolean => {
+    // Always allow short structural lines through to avoid producing a
+    // headless block; otherwise stop when we're past the budget.
+    if (charsUsed + line.length > charBudget && lines.length > 0 && line.length > 80) return false
+    lines.push(line)
+    charsUsed += line.length + 1
+    return true
+  }
+  const pushAll = (xs: string[]): boolean => {
+    for (const x of xs) if (!push(x)) return false
+    return true
+  }
+  const overBudget = (): boolean => charsUsed >= charBudget
+
+  // ── 1. Workspace context (always — it's the cheapest, highest-trust block) ──
   if (graph.workspace?.readme || graph.workspace?.rootPackageMeta) {
-    lines.push('=== WORKSPACE CONTEXT (ground truth from authors) ===')
+    push('=== WORKSPACE CONTEXT (ground truth from authors) ===')
     if (graph.workspace.rootPackageMeta) {
       const m = graph.workspace.rootPackageMeta
-      if (m.name) lines.push(`Workspace name: ${m.name}`)
-      if (m.description) lines.push(`Workspace description: ${m.description}`)
+      if (m.name) push(`Workspace name: ${m.name}`)
+      if (m.description) push(`Workspace description: ${m.description}`)
     }
     if (graph.workspace.readme) {
-      lines.push('')
-      lines.push('--- workspace README ---')
-      lines.push(graph.workspace.readme)
-      lines.push('--- end workspace README ---')
+      const readme = capChars(graph.workspace.readme, caps.readmeChars)
+      push('')
+      push('--- workspace README ---')
+      push(readme)
+      push('--- end workspace README ---')
     }
-    lines.push('')
+    push('')
   }
 
   // ── 2. System overview ──
-  lines.push('=== SYSTEM OVERVIEW ===')
-  lines.push(`Services analyzed: ${graph.repos.map((r) => r.name).join(', ')}`)
-  lines.push('')
+  push('=== SYSTEM OVERVIEW ===')
+  push(`Services analyzed: ${graph.repos.map((r) => r.name).join(', ')}`)
+  push('')
 
   // ── 3. Per-repo blocks ──
+  // Symbol-ranking helper: prefer symbols that back an HTTP endpoint or have
+  // a framework stereotype (`@RestController`, etc.) — they're the most
+  // load-bearing parts of the API surface.
   for (const repo of graph.repos) {
-    lines.push(`==================== ${repo.name} ====================`)
-    lines.push(`Path: ${repo.path}`)
-    lines.push(`Languages: ${repo.languages.join(', ') || 'unknown'}`)
-    if (repo.dockerService) lines.push(`Docker service: ${repo.dockerService}`)
+    if (overBudget()) break
+    const endpointFiles = new Set(
+      repo.endpoints.map((e) => e.sourceFile).filter((f): f is string => !!f)
+    )
+    push(`==================== ${repo.name} ====================`)
+    push(`Path: ${repo.path}`)
+    push(`Languages: ${repo.languages.join(', ') || 'unknown'}`)
+    if (repo.dockerService) push(`Docker service: ${repo.dockerService}`)
 
-    // Package metadata — what the package declares about itself
     if (repo.packageMeta) {
-      lines.push(...formatPackageMeta(repo.packageMeta))
+      pushAll(formatPackageMeta(repo.packageMeta))
     }
 
-    // README — ground truth from the author
     if (repo.readme) {
-      lines.push('')
-      lines.push(`--- ${repo.name} README ---`)
-      lines.push(repo.readme)
-      lines.push(`--- end ${repo.name} README ---`)
+      push('')
+      push(`--- ${repo.name} README ---`)
+      push(capChars(repo.readme, caps.readmeChars))
+      push(`--- end ${repo.name} README ---`)
     }
 
-    // Static signals (endpoints, events, env, deps)
     if (repo.endpoints.length > 0) {
-      const http = repo.endpoints.filter((e) => e.type === 'http').slice(0, 30)
-      const events = repo.endpoints.filter((e) => e.type === 'event').slice(0, 20)
+      const http = repo.endpoints.filter((e) => e.type === 'http').slice(0, caps.endpointsHttp)
+      const events = repo.endpoints.filter((e) => e.type === 'event').slice(0, caps.endpointsEvent)
       if (http.length > 0) {
-        lines.push('HTTP endpoints exposed:')
-        for (const e of http) lines.push(`  ${e.method} ${e.path}${e.sourceFile ? '   (' + e.sourceFile + ')' : ''}`)
+        push('HTTP endpoints exposed:')
+        for (const e of http) push(`  ${e.method} ${e.path}${e.sourceFile ? '   (' + e.sourceFile + ')' : ''}`)
       }
       if (events.length > 0) {
-        lines.push('Events emitted:')
-        for (const e of events) lines.push(`  ${e.eventName}`)
+        push('Events emitted:')
+        for (const e of events) push(`  ${e.eventName}`)
       }
     }
 
     if (repo.serviceUrls.length > 0) {
       const realUrls = repo.serviceUrls.filter((su) => su.envVar !== '__docker_service__')
       if (realUrls.length > 0) {
-        lines.push('Service URLs declared (env / compose):')
-        for (const su of realUrls.slice(0, 15)) {
-          lines.push(`  ${su.envVar} = ${su.url}`)
+        push('Service URLs declared (env / compose):')
+        for (const su of realUrls.slice(0, caps.serviceUrls)) {
+          push(`  ${su.envVar} = ${su.url}`)
         }
       }
     }
 
     if (repo.dependencies.length > 0) {
-      lines.push(`Top dependencies: ${repo.dependencies.slice(0, 15).join(', ')}`)
+      push(`Top dependencies: ${repo.dependencies.slice(0, caps.dependencies).join(', ')}`)
     }
 
-    // Per-file symbol map from static scan (capped to keep prompt lean).
-    // Java/Spring entries surface their stereotype as a `tag` (e.g.
-    // `@RestController`) and their public method names as `members` so the
-    // LLM sees each class's role and API surface in one line.
-    if (repo.exportedSymbols && repo.exportedSymbols.length > 0) {
-      lines.push('Exported symbols (static scan, file → symbols):')
-      for (const fe of repo.exportedSymbols.slice(0, 25)) {
-        const symList = fe.symbols
-          .slice(0, 8)
+    if (repo.exportedSymbols && repo.exportedSymbols.length > 0 && remaining() > 200) {
+      // Rank files: those backing an endpoint first, then by symbol count.
+      const ranked = [...repo.exportedSymbols].sort((a, b) => {
+        const aHit = endpointFiles.has(a.file) ? 1 : 0
+        const bHit = endpointFiles.has(b.file) ? 1 : 0
+        if (aHit !== bHit) return bHit - aHit
+        return (b.symbols?.length ?? 0) - (a.symbols?.length ?? 0)
+      })
+      push('Exported symbols (static scan, file → symbols):')
+      for (const fe of ranked.slice(0, caps.files)) {
+        // Within a file: tagged symbols (controllers, services) first.
+        const sortedSyms = [...fe.symbols].sort((a, b) => (b.tag ? 1 : 0) - (a.tag ? 1 : 0))
+        const symList = sortedSyms
+          .slice(0, caps.symbolsPerFile)
           .map((s) => {
             const tag = s.tag ? `${s.tag} ` : ''
             const asyncPrefix = s.async ? 'async ' : ''
             const members =
               s.members && s.members.length > 0
-                ? ` [${s.members.slice(0, 8).join(', ')}${s.members.length > 8 ? ', …' : ''}]`
+                ? ` [${s.members.slice(0, caps.membersPerSymbol).join(', ')}${s.members.length > caps.membersPerSymbol ? ', …' : ''}]`
                 : ''
             return `${tag}${asyncPrefix}${s.kind} ${s.name}${members}`
           })
           .join(' | ')
-        lines.push(`  ${fe.file}: ${symList}`)
+        push(`  ${fe.file}: ${symList}`)
       }
     }
 
-    lines.push('')
+    push('')
   }
 
   // ── 4. Cross-repo HTTP connections (detected by repomap) ──
-  if (graph.httpRelations.length > 0) {
-    lines.push('=== HTTP CONNECTIONS BETWEEN SERVICES (detected by static scan) ===')
+  if (graph.httpRelations.length > 0 && remaining() > 200) {
+    push('=== HTTP CONNECTIONS BETWEEN SERVICES (detected by static scan) ===')
     for (const r of graph.httpRelations) {
-      lines.push(`${r.from} → ${r.to} [${r.method ?? 'CALL'}] ${r.url}  (evidence: ${r.evidence})`)
+      push(`${r.from} → ${r.to} [${r.method ?? 'CALL'}] ${r.url}  (evidence: ${r.evidence})`)
     }
-    lines.push('')
+    push('')
   }
 
   // ── 5. Cross-repo structural edges (from graphify) ──
-  const crossRepoEdges = summarizeCrossRepoEdges(graph.graphify)
-  if (crossRepoEdges.length > 0) {
-    lines.push('=== STRUCTURAL CROSS-REPO EDGES (graphify) ===')
-    for (const e of crossRepoEdges.slice(0, 50)) {
-      lines.push(`${e.fromRepo}::${e.fromLabel} → ${e.toRepo}::${e.toLabel}  [${e.relation}]`)
+  // Lower priority than HTTP relations; skip when budget is tight.
+  if (remaining() > 400) {
+    const crossRepoEdges = summarizeCrossRepoEdges(graph.graphify)
+    if (crossRepoEdges.length > 0) {
+      push('=== STRUCTURAL CROSS-REPO EDGES (graphify) ===')
+      for (const e of crossRepoEdges.slice(0, caps.crossRepoEdges)) {
+        push(`${e.fromRepo}::${e.fromLabel} → ${e.toRepo}::${e.toLabel}  [${e.relation}]`)
+      }
+      push('')
     }
-    lines.push('')
   }
 
-  // ── 6. Communities ──
-  const communities = (graph.graphify.graph?.communities ?? null) as Record<string, string[]> | null
-  if (communities && Object.keys(communities).length > 0) {
-    lines.push('=== COMMUNITIES (graphify clustering) ===')
-    const top = Object.entries(communities).slice(0, 8)
-    for (const [id, members] of top) {
-      lines.push(`Community ${id}: ${members.slice(0, 6).join(', ')}${members.length > 6 ? ` (+${members.length - 6} more)` : ''}`)
+  // ── 6. Communities (lowest priority) ──
+  if (remaining() > 200) {
+    const communities = (graph.graphify.graph?.communities ?? null) as Record<string, string[]> | null
+    if (communities && Object.keys(communities).length > 0) {
+      push('=== COMMUNITIES (graphify clustering) ===')
+      const top = Object.entries(communities).slice(0, caps.communities)
+      for (const [id, members] of top) {
+        push(`Community ${id}: ${members.slice(0, 6).join(', ')}${members.length > 6 ? ` (+${members.length - 6} more)` : ''}`)
+      }
     }
   }
 
   return lines.join('\n')
+}
+
+function capChars(s: string, max: number): string {
+  if (!Number.isFinite(max) || s.length <= max) return s
+  return s.slice(0, max).trimEnd() + '\n…(truncated)…'
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
