@@ -55,6 +55,13 @@ export type Phase =
        *  adapters; (1 + repos + 1) for parallel, minus any sections skipped
        *  via ai.sections. */
       callCount: number
+      /** Rough wall-clock seconds the LLM phase is expected to take.
+       *  Derived from output tokens / per-model throughput, with a small
+       *  overhead constant. Single-mode runs serially; parallel-mode runs
+       *  the sequential overview first and then everything else in
+       *  parallel, so its ETA is much shorter than the sum of per-call
+       *  ETAs. */
+      estimatedSec: number
     }
   | { kind: 'llm-start' }
   | { kind: 'llm-progress'; elapsedSec: number }
@@ -122,6 +129,7 @@ export class Orchestrator {
       inputTokensEstimate: estimate.inputTokens,
       outputTokensEstimate: estimate.outputTokens,
       callCount: estimate.callCount,
+      estimatedSec: estimate.estimatedSec,
     })
 
     this.listener({ kind: 'llm-start' })
@@ -375,7 +383,23 @@ interface LlmUsageEstimate {
   callCount: number
   compactChars: number   // kept for backward compat with the Phase event
   apiReference: boolean
+  estimatedSec: number
 }
+
+// Output-token throughput by model family (tokens/sec). Calibrated against
+// typical Anthropic latencies — intentionally conservative so the elapsed
+// counter rarely overshoots the ETA.
+function throughputTokPerSec(model: string | undefined): number {
+  const m = (model ?? '').toLowerCase()
+  if (m.includes('haiku')) return 120
+  if (m.includes('opus')) return 35
+  // sonnet, default, custom IDs we don't recognize → assume Sonnet-class
+  return 60
+}
+
+// Per-call network/queue overhead. Small because cache reads are fast and
+// claude-code/claude both warm up quickly.
+const CALL_OVERHEAD_SEC = 4
 
 // Schema block sizes (chars) — pulled from the adapter source. Constants
 // keep this estimator decoupled from the adapter; if you change a schema,
@@ -438,7 +462,10 @@ function estimateLlmUsage(
       (wantIntegrations ? OUTPUT_TOK.integrations : 0) +
       (wantServices ? svcOutPerRepo * repoCount : 0) +
       (wantGs ? OUTPUT_TOK.gettingStarted : 0)
-    return { inputTokens: tok(inputChars), outputTokens, callCount: 1, compactChars, apiReference }
+    // Single mode: ETA is dominated by output streaming time at the primary
+    // model's throughput, plus one overhead.
+    const estimatedSec = Math.round(outputTokens / throughputTokPerSec(config.ai.model) + CALL_OVERHEAD_SEC)
+    return { inputTokens: tok(inputChars), outputTokens, callCount: 1, compactChars, apiReference, estimatedSec }
   }
 
   // parallel — sum across overview + N service + gettingStarted, minus skips.
@@ -466,22 +493,40 @@ function estimateLlmUsage(
   let inputChars = 0
   let outputTokens = 0
   let callCount = 0
+  const primaryTp = throughputTokPerSec(config.ai.model)
+  // modelFast defaults to 'haiku' on claude, primary elsewhere. Fall back to
+  // the same throughput if no modelFast is configured.
+  const fastTp = config.ai.modelFast
+    ? throughputTokPerSec(config.ai.modelFast)
+    : (config.ai.provider === 'claude' ? throughputTokPerSec('haiku') : primaryTp)
+
+  // Sequential first call (overview + integrations) uses the primary model.
+  let sequentialSec = 0
+  // Parallel calls run concurrently — wall-clock = the SLOWEST of them.
+  let parallelMaxSec = 0
   if (wantOverview) {
     inputChars += ovInput
-    outputTokens += OUTPUT_TOK.overview + OUTPUT_TOK.integrations
+    const ovOut = OUTPUT_TOK.overview + OUTPUT_TOK.integrations
+    outputTokens += ovOut
     callCount += 1
+    sequentialSec += ovOut / primaryTp + CALL_OVERHEAD_SEC
   }
   if (wantServices) {
     inputChars += repoCount * svcInput
     const svcOut = apiReference ? OUTPUT_TOK.serviceWithApiRef : OUTPUT_TOK.serviceWithoutApiRef
     outputTokens += repoCount * svcOut
     callCount += repoCount
+    const svcSec = svcOut / fastTp + CALL_OVERHEAD_SEC
+    if (svcSec > parallelMaxSec) parallelMaxSec = svcSec
   }
   if (wantGs) {
     inputChars += gsInput
     outputTokens += OUTPUT_TOK.gettingStarted
     callCount += 1
+    const gsSec = OUTPUT_TOK.gettingStarted / fastTp + CALL_OVERHEAD_SEC
+    if (gsSec > parallelMaxSec) parallelMaxSec = gsSec
   }
 
-  return { inputTokens: tok(inputChars), outputTokens, callCount, compactChars, apiReference }
+  const estimatedSec = Math.round(sequentialSec + parallelMaxSec)
+  return { inputTokens: tok(inputChars), outputTokens, callCount, compactChars, apiReference, estimatedSec }
 }

@@ -36,10 +36,11 @@ const cliDict = {
     graphBuilt: (n: number, e: number, h: number) => `Graph built: ${n} nodes · ${e} edges · ${h} HTTP relations`,
     askingModel: 'Generating documentation with the model… (this can take 1-3 min)',
     waitingModel: (elapsed: string) => `Waiting for the model… ${elapsed}`,
-    waitingHintSlow: 'taking longer than usual — check your quota: `claude --version`',
-    waitingHintStuck: 'this looks stuck — Ctrl+C and try `repomap doctor`',
-    llmCallStart: (model: string, strategy: string, apiRef: string, inTokens: string, outTokens: string, calls: number) =>
-      `→ ~${inTokens} in + ~${outTokens} out tokens · ${calls} call${calls === 1 ? '' : 's'} · ${model} · ${strategy} · apiReference: ${apiRef}`,
+    waitingModelEta: (elapsed: string, eta: string) => `Waiting for the model… ${elapsed} / ETA ${eta}`,
+    waitingHintSlow: 'taking longer than the ETA — check your quota: `claude --version`',
+    waitingHintStuck: 'well past the ETA — Ctrl+C and try `repomap doctor`',
+    llmCallStart: (model: string, strategy: string, apiRef: string, inTokens: string, outTokens: string, calls: number, eta: string) =>
+      `→ ~${inTokens} in + ~${outTokens} out tokens · ${calls} call${calls === 1 ? '' : 's'} · ${model} · ${strategy} · apiReference: ${apiRef} · ETA ${eta}`,
     resultMeta: (input: string, output: string, cost: string) =>
       `${input} → ${output} tokens · ${cost}`,
     resultMetaErrSpent: (cost: string) => `(spent ${cost} before the error)`,
@@ -225,10 +226,11 @@ const cliDict = {
     graphBuilt: (n: number, e: number, h: number) => `Grafo construido: ${n} nodos · ${e} edges · ${h} HTTP relations`,
     askingModel: 'Generando documentación con el modelo… (puede tardar 1-3 min)',
     waitingModel: (elapsed: string) => `Esperando respuesta del modelo… ${elapsed}`,
-    waitingHintSlow: 'está tardando más de lo normal — revisa tu cuota con `claude --version`',
-    waitingHintStuck: 'parece atorado — Ctrl+C y prueba `repomap doctor`',
-    llmCallStart: (model: string, strategy: string, apiRef: string, inTokens: string, outTokens: string, calls: number) =>
-      `→ ~${inTokens} in + ~${outTokens} out tokens · ${calls} call${calls === 1 ? '' : 's'} · ${model} · ${strategy} · apiReference: ${apiRef}`,
+    waitingModelEta: (elapsed: string, eta: string) => `Esperando respuesta del modelo… ${elapsed} / ETA ${eta}`,
+    waitingHintSlow: 'pasó del ETA — revisa tu cuota con `claude --version`',
+    waitingHintStuck: 'muy lejos del ETA — Ctrl+C y prueba `repomap doctor`',
+    llmCallStart: (model: string, strategy: string, apiRef: string, inTokens: string, outTokens: string, calls: number, eta: string) =>
+      `→ ~${inTokens} in + ~${outTokens} out tokens · ${calls} call${calls === 1 ? '' : 's'} · ${model} · ${strategy} · apiReference: ${apiRef} · ETA ${eta}`,
     resultMeta: (input: string, output: string, cost: string) =>
       `${input} → ${output} tokens · ${cost}`,
     resultMetaErrSpent: (cost: string) => `(gastaste ${cost} antes del error)`,
@@ -496,6 +498,9 @@ program
     // Surfaced in both success and failure paths.
     type ResultMeta = { costUsd?: number; inputTokens?: number; outputTokens?: number }
     const metaHolder: { value: ResultMeta | null } = { value: null }
+    // Captured from llm-call-start. Drives the "elapsed / ETA" counter and
+    // the dynamic slow/stuck thresholds in the wait line.
+    let etaSec: number | null = null
 
     try {
       const orchestrator = new Orchestrator(config, adapter)
@@ -518,13 +523,15 @@ program
               // an anchor for the elapsed counter that follows.
               // The estimate includes system (skill + schema) + user
               // (compact graph), summed across all calls when parallel.
+              etaSec = phase.estimatedSec
               console.log(chalk.dim('  ' + tCli(lang, 'llmCallStart')(
                 chalk.cyan(phase.model),
                 phase.strategy,
                 phase.apiReference ? 'on' : 'off',
                 chalk.bold(formatTokensCompact(phase.inputTokensEstimate)),
                 chalk.bold(formatTokensCompact(phase.outputTokensEstimate)),
-                phase.callCount
+                phase.callCount,
+                chalk.bold(formatElapsed(phase.estimatedSec))
               )))
               spinner.start(chalk.dim(tCli(lang, 'askingModel')))
               break
@@ -533,8 +540,11 @@ program
               // While listr2 is rendering its own multi-task view, the
               // generic "waiting…" counter would conflict. Suppress it.
               if (listrActive) break
-              const base = tCli(lang, 'waitingModel')(chalk.cyan(formatElapsed(phase.elapsedSec)))
-              const hint = waitHint(lang, phase.elapsedSec)
+              const elapsedFmt = chalk.cyan(formatElapsed(phase.elapsedSec))
+              const base = etaSec != null
+                ? tCli(lang, 'waitingModelEta')(elapsedFmt, chalk.cyan(formatElapsed(etaSec)))
+                : tCli(lang, 'waitingModel')(elapsedFmt)
+              const hint = waitHint(lang, phase.elapsedSec, etaSec)
               spinner.text = chalk.dim(hint ? `${base} ${chalk.yellow(`· ${hint}`)}` : base)
               break
             }
@@ -2315,9 +2325,22 @@ function formatCostUsd(usd?: number): string {
   return `$${usd.toFixed(2)}`
 }
 
-/** Inform the user when the wait is unusually long. Thresholds based on
- *  what's typical for Sonnet single-call on medium repos. */
-function waitHint(lang: CliLang, elapsedSec: number): string | null {
+/** Inform the user when the wait is unusually long.
+ *  Thresholds scale with the ETA when we have one: "slow" at 1.5× ETA,
+ *  "stuck" at 3× ETA — so a small 30-second call flags slowness faster
+ *  than a 4-minute apiRef run, but a legitimately long run doesn't get
+ *  alarming labels at 60s just because the old fixed threshold said so.
+ *  Floors prevent false positives on tiny runs.
+ *  Falls back to the legacy fixed thresholds (180s / 600s) when no ETA
+ *  is available — e.g. adapters that don't emit estimatedSec. */
+function waitHint(lang: CliLang, elapsedSec: number, etaSec: number | null): string | null {
+  if (etaSec != null) {
+    const slowAt = Math.max(60, Math.round(etaSec * 1.5))
+    const stuckAt = Math.max(180, Math.round(etaSec * 3))
+    if (elapsedSec >= stuckAt) return tCli(lang, 'waitingHintStuck')
+    if (elapsedSec >= slowAt) return tCli(lang, 'waitingHintSlow')
+    return null
+  }
   if (elapsedSec >= 600) return tCli(lang, 'waitingHintStuck')
   if (elapsedSec >= 180) return tCli(lang, 'waitingHintSlow')
   return null
