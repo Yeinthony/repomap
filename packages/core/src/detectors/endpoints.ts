@@ -4,7 +4,10 @@ import fg from 'fast-glob'
 import type { APIEndpoint } from '../types.js'
 import { extractSpringPropertyEnvVars } from './service-urls.js'
 
-const CODE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rb', '.java']
+// Glob pattern that filters code extensions at the filesystem-walk level.
+// Pushing the filter into fast-glob avoids enumerating assets / binaries /
+// configs we'd immediately discard, which is the dominant cost on large repos.
+const CODE_GLOB = '**/*.{ts,tsx,js,jsx,py,go,rb,java}'
 const IGNORE = [
   '**/node_modules/**',
   '**/dist/**',
@@ -20,7 +23,7 @@ const IGNORE = [
  * event publishers (.emit/.publish/.send) inside a repo.
  */
 export async function detectEndpoints(repoPath: string): Promise<APIEndpoint[]> {
-  const files = await fg('**/*', {
+  const files = await fg(CODE_GLOB, {
     cwd: repoPath,
     ignore: IGNORE,
     onlyFiles: true,
@@ -38,7 +41,6 @@ export async function detectEndpoints(repoPath: string): Promise<APIEndpoint[]> 
   }
 
   for (const file of files) {
-    if (!CODE_EXTS.includes(path.extname(file))) continue
     let content: string
     try {
       content = fs.readFileSync(file, 'utf-8')

@@ -3,7 +3,9 @@ import path from 'path'
 import fg from 'fast-glob'
 import type { HttpRelation, RepoSummary, ServiceUrlMapping } from '../types.js'
 
-const CODE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rb', '.java']
+// Filter extensions at the glob level so we don't enumerate every binary /
+// image / config in the repo just to discard it after.
+const CODE_GLOB = '**/*.{ts,tsx,js,jsx,py,go,rb,java}'
 const IGNORE = [
   '**/node_modules/**',
   '**/dist/**',
@@ -80,7 +82,7 @@ async function scanRepoForHttp(
   repoName: string,
   serviceUrls: ServiceUrlMapping[]
 ): Promise<RawHttpCall[]> {
-  const files = await fg('**/*', {
+  const files = await fg(CODE_GLOB, {
     cwd: repoPath,
     ignore: IGNORE,
     onlyFiles: true,
@@ -97,7 +99,6 @@ async function scanRepoForHttp(
   const calls: RawHttpCall[] = []
 
   for (const file of files) {
-    if (!CODE_EXTS.includes(path.extname(file))) continue
     let content: string
     try {
       content = fs.readFileSync(file, 'utf-8')

@@ -173,11 +173,15 @@ export class ClaudeAdapter implements AIAdapter {
   }
 
   /** Low-level chat primitive used by the parallel orchestrator. */
-  async chat(opts: { systemPrompt: string; userPrompt: string; model?: string }): Promise<string> {
+  async chat(opts: { systemPrompt: string; userPrompt: string; model?: string; maxTokens?: number }): Promise<string> {
     const model = this.resolveModel(opts.model)
     const response = await this.client.messages.create({
+      // max_tokens is a HARD CAP, not a billing budget — the API only
+      // charges for actual output tokens. Erring high prevents silent
+      // truncation (broken JSON) on big responses; the per-call orchestrator
+      // can still pass an explicit number when it knows better.
       model,
-      max_tokens: 8000,
+      max_tokens: opts.maxTokens ?? 16000,
       // Single cached block for the whole system prompt — adapters using chat()
       // are expected to pass a long, stable prefix (skill + schema) followed
       // by the per-call instructions. The 5-min cache TTL covers a full
@@ -186,6 +190,19 @@ export class ClaudeAdapter implements AIAdapter {
       messages: [{ role: 'user', content: opts.userPrompt }],
     })
     return response.content.filter((b) => b.type === 'text').map((b) => (b as any).text).join('')
+  }
+
+  /** Pick a max_tokens cap for `generateDocsSingle` based on what the LLM
+   *  will need to emit: roughly 1500 tokens of overhead + 800 per service,
+   *  ×4 when apiReference inflates the per-service output with symbol-level
+   *  docs. Capped to a model-safe ceiling (Sonnet 4 = 64K). Erring high is
+   *  free because the API only charges for actual tokens generated. */
+  private singleMaxTokens(repoCount: number, withApiReference: boolean): number {
+    const perRepo = withApiReference ? 3200 : 800
+    const estimated = 1500 + perRepo * repoCount
+    // Floor 8000 (so a 1-repo run still has slack), ceiling 32000 (well under
+    // Sonnet 4's 64K limit but enough for ~10 services with apiRef).
+    return Math.max(8000, Math.min(32000, estimated))
   }
 
   private resolveModel(name?: string): string {
@@ -251,10 +268,11 @@ Generate documentation following the JSON schema defined in the system prompt. O
     debugDump('compact-graph.txt', compactRepr)
     debugDump('llm-system-prompt.txt', systemBlocks.map((b: any) => b.text).join('\n\n'))
     debugDump('llm-user-prompt.txt', userPrompt)
+    const maxTokens = this.singleMaxTokens(graph.repos.length, withApiReference)
     debugDump('llm-meta.json', JSON.stringify({
       adapter: 'claude',
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 8000,
+      max_tokens: maxTokens,
       apiReference: withApiReference,
       lean,
       budget: config.ai.budget ?? (lean ? 8000 : 20000),
@@ -268,7 +286,7 @@ Generate documentation following the JSON schema defined in the system prompt. O
 
     const response = await this.client.messages.create({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 8000,
+      max_tokens: maxTokens,
       messages: [{ role: 'user', content: userPrompt }],
       system: systemBlocks,
     })

@@ -415,6 +415,10 @@ export interface ChatOpts {
   userPrompt: string
   /** Per-call model override (e.g. 'haiku' for cheap sub-sections). */
   model?: string
+  /** Hard cap on output tokens. The provider bills actual output, not this
+   *  number — set it generously to avoid silent truncation on large responses.
+   *  Adapter picks a sensible default (~16K) when unset. */
+  maxTokens?: number
 }
 
 export interface GitDiff {

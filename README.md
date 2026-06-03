@@ -33,6 +33,7 @@ Apunta repomap a tus repos, espera 2–5 minutos, y obtienes un sitio HTML de ca
 - [Troubleshooting](#troubleshooting)
 - [Soporte Java / Spring Boot](#soporte-java--spring-boot)
 - [Roadmap](#roadmap)
+- [Performance bottlenecks pendientes](#performance-bottlenecks-pendientes-referencia-para-contribuir)
 - [Contribuir](#contribuir)
 - [Licencia](#licencia)
 
@@ -150,6 +151,8 @@ Por defecto el flujo es **interactivo**:
 - Sniff del provider AI: probe real de `claude` en PATH → `claude-code`; probe de `ANTHROPIC_API_KEY` → `claude`; probe de Ollama local → `ollama`
 - Selector de modelo provider-aware (lista los modelos realmente disponibles, sin defaults inventados)
 - Por cada repo: pide `name` (sugiere basename) y `description` opcional
+- **Selector de secciones a generar** (checkbox): Overview, Integraciones, Páginas por servicio, API Reference, Getting Started. Cada sección desmarcada elimina un LLM call entero del run.
+- **Selector de modo lean** (recomendado): activa `ai.lean: true` en el yml para ~70% menos input tokens por call.
 - Muestra preview del YAML y confirma antes de escribir
 
 ¿Prefieres el template estático con placeholders? `repomap init --yes`.
@@ -190,10 +193,19 @@ watch: false              # cambia a true para auto-update en cambios de código
 repomap generate
 ```
 
-Tarda **2–5 minutos** dependiendo del tamaño de los repos y del provider/strategy. Verás progreso en tiempo real (con `listr2` cuando va paralelo):
+Tarda **1–5 minutos** dependiendo del tamaño de los repos y del provider/strategy. Verás progreso en tiempo real con un header que estima input/output tokens, número de calls y ETA wall-clock:
 
 ```
 ✔ Grafo construido: 307 nodos · 431 edges · 4 HTTP relations
+  → ~16.3K in + ~8.3K out tokens · 1 call · sonnet · single · apiReference: off · ETA 2m 22s
+⠋ Esperando respuesta del modelo… 1m 04s / ETA 2m 22s
+```
+
+En modo `parallel`:
+
+```
+✔ Grafo construido: 307 nodos · 431 edges · 4 HTTP relations
+  → ~65.2K in + ~8.3K out tokens · 8 calls · sonnet · parallel · apiReference: off · ETA 56s
 ⠋ overview          ▶ corriendo  · sonnet
 ✔ getting-started   ✔ 18s        · haiku
 ✔ integrations      ✔ 22s        · haiku
@@ -202,6 +214,8 @@ Tarda **2–5 minutos** dependiendo del tamaño de los repos y del provider/stra
 ✔ Documentación recibida en 2m 47s · $0.18
   Output: /Users/yo/workspaces/mi-plataforma/repomap-docs
 ```
+
+El ETA se calcula como `output_tokens / throughput_modelo` (haiku ≈ 120 tok/s, sonnet ≈ 60 tok/s, opus ≈ 35 tok/s) más overhead por call. Si el elapsed pasa de **1.5× ETA**, aparece un hint "tardando más de lo normal — revisa tu cuota"; a **3× ETA** sugiere `Ctrl+C`.
 
 **Qué ocurre internamente:**
 
@@ -279,14 +293,37 @@ ai:
   baseUrl: <opcional>       # solo para provider 'ollama' (default: http://localhost:11434)
   binary: claude            # solo claude-code: ruta al binario si no está en PATH
   maxBudgetUsd: 1.00        # solo claude-code: tope de gasto por llamada
-  apiReference: false       # incluye sección "API reference" en cada servicio (default: false)
+  apiReference: false       # legacy — preferí ai.sections.apiReference (default: false)
   strategy: parallel        # parallel | single (default per adapter)
+
+  # ── Optimización del prompt (opt-in, default = comportamiento legacy) ─────
+  lean: true                # skill destilado + schema compacto + budget reducido (~70% menos input tokens)
+  budget: 8000              # tope aproximado de tokens para compactForLLM (default: 20000 / 8000 con lean)
+  skillSections: auto       # auto (subset por tipo de call) | full (legacy) | [lista explícita]
+
+  # ── Qué páginas generar (omitir reduce 1 LLM call cada una) ──────────────
+  sections:
+    overview: true          # página principal
+    integrations: true      # diagrama y flujos cross-service
+    services: true          # una página por repo
+    apiReference: false     # símbolos exportados con firmas (~30% más output tokens)
+    gettingStarted: auto    # auto (omite si >8 servicios) | true | false
 
 language: es                # idioma de la doc generada: en | es
 watch: false                # si true, `generate` queda en modo watch al terminar
 ```
 
 Las flags de la CLI tienen precedencia sobre los valores del yml.
+
+### Modo lean (recomendado)
+
+Activar `ai.lean: true` aplica tres optimizaciones combinadas:
+
+1. **Skill destilado por sección**: en lugar del playbook completo (~20K tokens), cada call (overview / per-service / getting-started) carga solo las referencias que necesita desde `references/_compact/*.md` — versiones condensadas a ~30% del tamaño original sin perder reglas mecánicas.
+2. **Schema TypeScript-like**: el contrato de output se emite como `type X = { … }` inline (~2K chars) en vez de JSON pretty-printed con ejemplos (~5K chars).
+3. **Budget adaptativo**: `compactForLLM` cae de 20K → 8K tokens objetivo, con caps más estrictos (12 archivos vs 25, 5 símbolos vs 8, etc.) y ranking que prioriza archivos que respaldan endpoints o tienen tag de framework (`@RestController`, etc.).
+
+**Impacto medido** en un workspace de 6 paquetes: input cae de ~26K → ~16K tokens en single mode, ~30% más rápido. En modo parallel + lean + skip gettingStarted: ~55K → 7 calls vs 65K → 8 calls. Para proyectos grandes (15+ repos) el ahorro compone aún más.
 
 ---
 
@@ -401,12 +438,21 @@ Por defecto la API reference por servicio está **off** (`apiReference: false`) 
 
 ### Coste típico
 
-| Setup | Coste por `generate` | Notas |
-|------|---------------------|-------|
-| `claude-code` + Pro/Max | $0 (incluido en la suscripción) | Tope `maxBudgetUsd` configurable |
-| `claude` API, sonnet single | $0.05–$0.30 | Para repos pequeños/medianos |
-| `claude` API, sonnet+haiku parallel | $0.10–$0.50 | Más rápido y con mejor cache hit en re-runs |
-| `ollama` (local) | $0 | Sin red, sin API key, calidad por debajo de Sonnet |
+Medido sobre un workspace de 6 paquetes (~800 nodos graphify, ~15K chars de compact graph). El input incluye system+user prompts sumados a través de todos los calls; el output es la Documentation JSON producida.
+
+| Setup | Input tok | Output tok | Calls | Tiempo | Coste |
+|-------|----------:|-----------:|------:|-------:|------:|
+| `claude-code` + Pro/Max, single, **lean** | ~16K | ~8K | 1 | ~3 min | $0 (subscripción) |
+| `claude-code` + Pro/Max, single, lean + apiRef | ~16K | ~14K | 1 | ~5 min | $0 (subscripción) |
+| `claude-code` + Pro/Max, single, legacy | ~26K | ~8K | 1 | ~3 min | $0 (subscripción) |
+| `claude` API, parallel + **lean** | ~65K | ~8K | 8 | ~1 min | ~$0.22 (con cache) |
+| `claude` API, parallel + lean + apiRef | ~67K | ~14K | 8 | ~1.5 min | ~$0.30 (con cache) |
+| `claude` API, parallel, legacy | ~95K | ~8K | 8 | ~1 min | ~$0.25 (con cache) |
+| `ollama` (local) | varía | varía | 1 | 5–15 min | $0 |
+
+**Para repos grandes (15+ servicios)** el modo lean ahorra mucho más en proporción — el skill cacheado deja de duplicarse innecesariamente entre calls. Para repos chicos (1–2 paquetes) la diferencia es marginal.
+
+> Tu shell tip: `repomap status` muestra el último coste, tokens y tamaño del cache.
 
 ---
 
@@ -603,10 +649,98 @@ El env var resultante se cruza luego con los nombres de tus repos (`guessRepoFro
 - [x] Generación paralela con prompt caching y sub-modelo barato (Haiku)
 - [x] Flag `--with-api-ref` para repos tipo librería/SDK
 - [x] Detectores Spring/Java — endpoints, RestTemplate/WebClient/Feign/OkHttp/Apache HttpClient, eventos Pub/Sub/Kafka/Rabbit/JMS/Spring, `application.yml`, metadata Gradle/Maven (ver [Soporte Java / Spring Boot](#soporte-java--spring-boot))
+- [x] **Modo lean** — `ai.lean: true` aplica skill destilado + schema compacto + budget reducido (~70% menos input tokens). Wizard `init` ofrece activarlo (default recomendado)
+- [x] **Selector de secciones** — `ai.sections.{overview,integrations,services,apiReference,gettingStarted}` permite omitir páginas. Cada sección desmarcada elimina un LLM call. Wizard `init` lo pregunta vía checkbox
+- [x] **ETA y telemetría real** — header `~X in + ~Y out · N calls · ETA Zm` y línea de espera `elapsed / ETA Zm` con thresholds adaptativos
+- [x] **`max_tokens` dinámico en el adapter `claude` API** — escala con `repos × apiRef` hasta 32K para evitar truncación silenciosa
 - [ ] Adaptador para Gemini (usa la integración nativa de graphify)
 - [ ] Adaptador para OpenAI
 - [ ] Sistema de temas
 - [ ] Chat embebido "Pregúntale a los docs"
+
+---
+
+## Performance bottlenecks pendientes (referencia para contribuir)
+
+Auditoría del pipeline de junio 2026. Los 3 quick wins ya están aplicados (max_tokens dinámico, glob con filtro de extensiones, `Promise.all` en `buildCodeGraph`). Los pendientes están priorizados por impacto. Cada uno linkea al archivo y línea donde hay que tocar.
+
+### 🟡 #2 — Workspace dedup (1h, alto impacto en repos chicos)
+
+**Problema**: cuando el config incluye el repo root (`path: .`) junto con sub-paquetes (`path: ./packages/core`, etc.), cada archivo de sub-paquete se escanea **2 veces** — una al procesar el root, otra al procesar el sub-paquete. En el config de prueba (6 entries), ~40% del trabajo de graph-build se desperdicia.
+
+**Dónde**: `packages/core/src/detectors/repo-summary.ts` — antes de cada `fg(...)`, detectar qué paths del config son superset de otros listados y excluirlos del glob de los repos parent. Otra opción: documentar que "no se debería incluir el root junto con sus paquetes" y warn en `repomap doctor`.
+
+### 🟡 #4 — Async IO real (~2h, paraleliza graph-build de verdad)
+
+**Problema**: 71 ocurrencias de `readFileSync` / `writeFileSync` / `existsSync` y **0** de `fs.promises`. El `Promise.all` del `buildCodeGraph` parece paralelo pero todas las funciones internas son sync → en realidad se serializan en el event loop.
+
+**Dónde**: 
+- `packages/core/src/detectors/*.ts` — convertir todos los `readFileSync` a `await fs.promises.readFile`
+- `packages/core/src/render/html.ts` — convertir los `writeFileSync` a `Promise.all([fs.promises.writeFile(...)])` (escribe 20+ páginas, gran ganancia)
+- `packages/core/src/orchestrator.ts:332-339` — `saveKnowledge` escribe ~600KB sync, bloquea la UI al final
+- `packages/core/src/render/docs-skill-loader.ts` — `fs.readFileSync` para SKILL.md + refs
+
+Trade-off: refactor grande. Cada función afectada cambia firma, los callers también. Idealmente hacerlo en una sola pasada.
+
+### 🟡 #5 — Walk compartido del filesystem (~2h, monorepo speedup)
+
+**Problema**: cada repo hace 5 walks independientes del filesystem (`detectEndpoints`, `scanRepoForHttp`, `detectLanguages`, `scanRepoExports`, `scanRepoJava`). Para un workspace de 6 repos son 30 walks. Cada walk re-stat-ea los mismos archivos.
+
+**Dónde**: introducir un `FileIndex` en `packages/core/src/detectors/` que se cree una sola vez por repo:
+
+```ts
+interface FileIndex {
+  byExt: Map<string, string[]>   // '.ts' → ['src/x.ts', ...]
+  ymlConfig: string[]
+  envFiles: string[]
+  packageMeta: PackageMeta | null
+}
+async function buildFileIndex(repoPath: string): Promise<FileIndex>
+```
+
+Cada detector recibe `FileIndex` en vez de hacer su propio glob. Ahorra ~80% del IO de stat. Beneficio máximo en monorepos con muchos repos chicos.
+
+### 🟢 #7 — Cache de `loadDocsSkill` cross-process (~30min)
+
+**Problema**: la cache es in-memory. Cada invocación de `repomap` (CLI fresh start, watch mode, hooks) re-lee y re-parsea el skill (~30KB cuando lean, ~80KB cuando full).
+
+**Dónde**: `packages/core/src/render/docs-skill-loader.ts` — opcionalmente escribir el blob concatenado a `<output>/data/skill-cache-<hash>.txt` cuando se carga, leer si existe y la mtime de los fuentes no cambió. Ganancia es chica (~50ms) pero rápido de implementar.
+
+### 🟢 #8 — `isGraphifyAvailable` se ejecuta por cada `generate` (~10min)
+
+**Problema**: `packages/core/src/graphify/runner.ts:39-45` spawnea `graphify --help` cada vez que se llama `Orchestrator.generate()`. Para watch mode esto es un spawn extra por cambio detectado.
+
+**Dónde**: cachear el resultado en un module-scope `let cached: boolean | null = null` con TTL opcional o limpiable.
+
+### 🟢 #9 — `mergeGraphifyGraphs` siempre spawnea el CLI (~30min)
+
+**Problema**: `packages/core/src/graphify/runner.ts:96-111` spawnea `graphify merge-graphs` aunque las entradas no hayan cambiado.
+
+**Dónde**: chequear `mtime` de cada `graph.json` de input vs el `cross-repo-graph.json` cacheado. Si nada cambió, saltar el spawn (ahorro ~100ms por `generate`).
+
+### 🟢 #10 — HTML render sync (~30min, post-LLM, no critical path)
+
+**Problema**: `packages/core/src/render/html.ts:22-80` escribe páginas con `writeFileSync` secuencial. Para 6 servicios con apiRef son 30+ archivos.
+
+**Dónde**: cambiar el bloque del `for` a `await Promise.all(pages.map(p => fs.promises.writeFile(...)))`. Combinable con #4.
+
+### 🔴 #11 — `claude-code` adapter sin streaming (UX, no perf real)
+
+**Problema**: `packages/adapters/claude-code/src/index.ts:336-362` spawnea `claude -p --output-format json` y espera el envelope completo. Si el modelo tarda 8 min, no hay señal de vida.
+
+**Dónde**: usar `--output-format stream-json --include-partial-messages` (ambos visibles en `claude --help`). El adapter ya parsea el envelope final — habría que añadir un parser de stream que emita progreso al `onProgress` listener. Reduciría hangs aparentes y permitiría timeouts realistas.
+
+### 🟢 #12 — Validar el `lean` apiRef en `claude-code` también
+
+**Problema**: el fix #1 (max_tokens dinámico) solo aplica al adapter `claude` API. Para `claude-code` el cap viene del backend Anthropic (Sonnet 4 = 64K), pero conviene documentar el comportamiento para evitar confusión.
+
+**Dónde**: añadir nota en este README — y eventualmente exponer en el adapter un mecanismo para pasar `--max-budget-usd` calculado dinámicamente como guard rail.
+
+### Calibración del estimador de ETA
+
+Los runs reales mostraron que **claude-code sonnet streamea a ~25-30 tok/s** (no los 60 que asumí). Los estimados están consistentemente bajos por ~2×.
+
+**Dónde**: `packages/core/src/orchestrator.ts` — la función `throughputTokPerSec` necesita ajustar el valor de Sonnet de 60 → 30 cuando el provider es `claude-code` específicamente (la API directa sí da ~60). Mejor aún: hacer la calibración por-provider o aprender empíricamente del último run guardado en `data/knowledge.json`.
 
 ---
 

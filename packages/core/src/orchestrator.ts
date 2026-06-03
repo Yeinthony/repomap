@@ -239,12 +239,14 @@ export class Orchestrator {
     )
 
     const summaries: RepoSummary[] = perRepo.map((r) => r.summary)
-    const { graph: merged } = await mergeGraphifyGraphs(
-      perRepo.map((r) => r.graphifyRes.graphJsonPath),
-      graphifyRoot
-    )
-
-    const httpRelations = await detectHttpCalls(summaries)
+    // Independent steps: mergeGraphifyGraphs reads per-repo graph.json + spawns
+    // the graphify CLI for cross-repo edges; detectHttpCalls walks the source
+    // files of each repo. Neither feeds into the other — fire in parallel.
+    // readWorkspaceContext is sync, no benefit to awaiting.
+    const [{ graph: merged }, httpRelations] = await Promise.all([
+      mergeGraphifyGraphs(perRepo.map((r) => r.graphifyRes.graphJsonPath), graphifyRoot),
+      detectHttpCalls(summaries),
+    ])
     const workspace = readWorkspaceContext()
 
     return {
