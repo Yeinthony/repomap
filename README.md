@@ -22,6 +22,7 @@ Apunta repomap a tus repos, espera 2–5 minutos, y obtienes un sitio HTML de ca
 - [Uso paso a paso](#uso-paso-a-paso)
 - [Comandos](#comandos)
 - [Configuración (`repomap.config.yml`)](#configuración-repomapconfigyml)
+- [Presets — rendimiento vs calidad](#presets--rendimiento-vs-calidad)
 - [Iterar sin volver a llamar al LLM](#iterar-sin-volver-a-llamar-al-llm)
 - [Auto-actualización (watch + hooks)](#auto-actualización-watch--hooks)
 - [Salida](#salida)
@@ -324,6 +325,145 @@ Activar `ai.lean: true` aplica tres optimizaciones combinadas:
 3. **Budget adaptativo**: `compactForLLM` cae de 20K → 8K tokens objetivo, con caps más estrictos (12 archivos vs 25, 5 símbolos vs 8, etc.) y ranking que prioriza archivos que respaldan endpoints o tienen tag de framework (`@RestController`, etc.).
 
 **Impacto medido** en un workspace de 6 paquetes: input cae de ~26K → ~16K tokens en single mode, ~30% más rápido. En modo parallel + lean + skip gettingStarted: ~55K → 7 calls vs 65K → 8 calls. Para proyectos grandes (15+ repos) el ahorro compone aún más.
+
+---
+
+## Presets — rendimiento vs calidad
+
+repomap por defecto deja casi todo desactivado para ser conservador. Si te cuesta tokens o tarda demasiado, no es bug — es que falta opt-in. Estos tres presets cubren el 95% de los casos. Pégalos tal cual en tu `repomap.config.yml`.
+
+> **El default más importante:** `provider: claude-code` cae a `strategy: single` (una sola call gigante). Para multi-repo medianos+, **siempre** querés `strategy: parallel`. Lo confirma el código: `packages/adapters/claude-code/src/index.ts:187`.
+
+### ⭐ Recomendado si usás Claude Code (Pro/Max)
+
+Si ya estás autenticado en Claude Code, este es **el** preset: maximiza calidad donde se nota (overview con Sonnet, skill completa de referencia para integrations) y exprime rendimiento donde no se nota (services en Haiku, lean por defecto, sin api-ref). Coste: $0 — todo va contra tu suscripción.
+
+```yaml
+ai:
+  provider: claude-code
+  model: sonnet             # overview + integrations con Sonnet
+  modelFast: haiku          # 1 call por servicio + getting-started con Haiku
+  strategy: parallel        # opt-in obligatorio — claude-code default es 'single'
+  lean: true                # skill destilada (~30% del tamaño) + schema TS-like + budget 8K
+  apiReference: false       # off salvo que documentés una librería/SDK público
+  sections:
+    overview: true
+    integrations: true
+    services: true
+    apiReference: false
+    gettingStarted: auto    # se incluye si tenés ≤8 repos
+```
+
+Equivalente por CLI si no querés tocar el yml (los flags ganan sobre el config):
+
+```bash
+repomap generate --strategy parallel --model-fast haiku --no-api-ref
+```
+
+**Por qué estos valores específicamente para `claude-code`:**
+
+- **`strategy: parallel`** — Sin esto cae a `single`, que es una sola llamada con todo el grafo + skill entera a Sonnet. Es exactamente lo que te estaba quemando tokens y tiempo.
+- **`modelFast: haiku`** — Las páginas per-service son ~70% del trabajo total; mandarlas a Haiku baja la latencia ~3× sin que se note en la prosa (overview e integrations, lo "narrativo", queda en Sonnet).
+- **`lean: true`** — `claude -p` no expone prompt caching por flag (ver comentario en `packages/adapters/claude-code/src/index.ts:183-186`), así que cada sub-call paga el system prompt entero. Lean compensa eso recortando ~60% del input por call.
+- **`apiReference: false`** — Añade ~4–5K output tokens por servicio. Solo vale la pena si tu repo es una librería pública con símbolos exportados que el consumidor va a importar.
+- **`gettingStarted: auto`** — Para workspaces de ≤8 repos se genera (mejor onboarding); arriba de eso se omite porque el contenido se vuelve repetitivo.
+
+**Resultado esperado en un workspace típico (6 repos, ~800 nodos):** ~8–12 min wall-clock, ~50K input + ~7K output tokens distribuidos entre 7–8 sub-calls. Con `strategy: single` (el default que tenés ahora) la misma generación toma 20+ min y consume ~3× más tokens en una sola call gigante.
+
+### 🏎️ Máximo rendimiento (más rápido + más barato)
+
+Úsalo cuando: vas a iterar varias veces, el workspace tiene 4+ repos, o estás en CI con presupuesto.
+
+```yaml
+ai:
+  provider: claude-code     # o 'claude' si tenés API key (~3× más rápido por caching real)
+  model: sonnet             # overview con Sonnet — single source of truth narrativa
+  modelFast: haiku          # services + getting-started con Haiku (~10× más barato)
+  strategy: parallel        # 1 call secuencial + N en paralelo
+  lean: true                # skill destilada + schema compacto + budget 8K
+  apiReference: false       # ya es default, lo dejamos explícito
+  sections:
+    gettingStarted: false   # opcional: ahorra 1 call si tu README ya cubre onboarding
+```
+
+Equivalente por flags (sin tocar el yml):
+
+```bash
+repomap generate --strategy parallel --model-fast haiku --no-api-ref
+# (lean y sections.* solo se pueden setear desde el yml)
+```
+
+Resultado típico (6 paquetes, ~800 nodos): **~1 min con `claude` API**, **~10 min con `claude-code` CLI** (paga prefix sin caching), ~60–70% menos tokens que el default.
+
+### 💎 Máxima calidad (prosa más rica, todo el detalle)
+
+Úsalo cuando: es la doc "oficial" del equipo, repo de librería/SDK pública, o vas a publicarla en GitHub Pages.
+
+```yaml
+ai:
+  provider: claude          # API directa — habilita prompt caching real
+  model: sonnet             # o 'opus' si tu cuota lo permite
+  modelFast: sonnet         # también Sonnet en sub-secciones (sin downgrade a Haiku)
+  strategy: parallel
+  lean: false               # playbook completo del skill (~20K tokens de guía)
+  apiReference: true        # tabla de símbolos exportados por servicio
+  sections:
+    overview: true
+    integrations: true
+    services: true
+    apiReference: true
+    gettingStarted: true    # forzar (no 'auto') aunque tengas muchos repos
+```
+
+Equivalente por flags:
+
+```bash
+repomap generate --strategy parallel --model-fast sonnet --with-api-ref
+```
+
+Trade-off: ~3–4× más caro y ~2× más tokens que el preset rápido. La diferencia se nota en analogías más afinadas, ejemplos con más contexto, y la API reference con firmas.
+
+### ⚖️ Balance recomendado (default sugerido)
+
+El sweet spot. Calidad alta donde importa (overview + integrations en Sonnet) y barato donde no se nota (per-service en Haiku, sin api-ref).
+
+```yaml
+ai:
+  provider: claude-code
+  model: sonnet
+  modelFast: haiku
+  strategy: parallel
+  lean: true
+  apiReference: false
+  # sections.gettingStarted queda en 'auto': se incluye si tenés ≤8 repos
+```
+
+Este es el preset que la sección "Quickstart" asume implícitamente. Si tu config es solo `provider: claude-code` + `model: sonnet`, te falta `strategy: parallel` + `lean: true` + `modelFast: haiku` — y eso es justo lo que dispara el gasto.
+
+### Tabla comparativa
+
+| Eje | 🏎️ Rendimiento | ⚖️ Balance | 💎 Calidad |
+|---|---|---|---|
+| `strategy` | `parallel` | `parallel` | `parallel` |
+| `model` (overview) | `sonnet` | `sonnet` | `sonnet` u `opus` |
+| `modelFast` (services) | `haiku` | `haiku` | `sonnet` |
+| `lean` | `true` | `true` | `false` |
+| `apiReference` | `false` | `false` | `true` |
+| `gettingStarted` | `false` | `auto` | `true` |
+| Input tokens (6 repos) | ~50K | ~55K | ~95K |
+| Output tokens | ~7K | ~8K | ~14K |
+| Tiempo con `claude` API | ~50 s | ~1 min | ~2 min |
+| Coste con `claude` API | ~$0.18 | ~$0.22 | ~$0.45 |
+| Coste con `claude-code` Pro/Max | $0 | $0 | $0 |
+
+> **Si usás `provider: ollama`:** la única perilla que mueve la aguja es `lean: true` + `sections.gettingStarted: false` + `sections.apiReference: false`. `strategy: parallel` no aporta mucho porque Ollama no tiene prompt caching y serializa internamente.
+
+### ¿Cuál elijo si tengo dudas?
+
+- **Es tu primer `generate`** → preset **Balance**, vé el resultado, ajustá después.
+- **Vas a publicarla a usuarios externos** → preset **Calidad**.
+- **CI corre cada PR o tenés 10+ repos** → preset **Rendimiento**.
+- **`generate` te está quemando tokens AHORA** → cambiá a preset **Rendimiento** y volvé a correr.
 
 ---
 

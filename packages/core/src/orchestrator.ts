@@ -388,10 +388,44 @@ interface LlmUsageEstimate {
   estimatedSec: number
 }
 
-// Output-token throughput by model family (tokens/sec). Calibrated against
-// typical Anthropic latencies — intentionally conservative so the elapsed
-// counter rarely overshoots the ETA.
-function throughputTokPerSec(model: string | undefined): number {
+// Per-provider calibration. The estimator is built around the Anthropic API
+// (`claude` provider) numbers — fast streaming, low per-call overhead, true
+// parallelism. Other providers diverge:
+//   - `claude-code` spawns `claude -p` as a subprocess per call. Cold start
+//     + auth handshake adds ~15-20s/call; multiple concurrent CLI processes
+//     share quota/auth so wall-clock is closer to sum-of-times than max.
+//   - `ollama` runs locally and serializes through one model context.
+//
+// Fields:
+//   tpScale            : multiplier on the per-model throughput table below.
+//                        0.5 means effective tok/s is half of the API.
+//   callOverheadSec    : per-call fixed overhead (spawn, auth, queue).
+//   parallelEfficiency : how much parallel sub-calls actually win in
+//                        wall-clock. 1 = pure max (API ideal). 0 = pure
+//                        sum (effectively serial). Used to blend the two.
+interface ProviderProfile {
+  tpScale: number
+  callOverheadSec: number
+  parallelEfficiency: number
+}
+
+const PROVIDER_PROFILES: Record<string, ProviderProfile> = {
+  claude:        { tpScale: 1.0, callOverheadSec: 4,  parallelEfficiency: 1.0 },
+  'claude-code': { tpScale: 0.5, callOverheadSec: 18, parallelEfficiency: 0.15 },
+  ollama:        { tpScale: 0.4, callOverheadSec: 6,  parallelEfficiency: 0.0 },
+  openai:        { tpScale: 1.0, callOverheadSec: 4,  parallelEfficiency: 1.0 },
+  gemini:        { tpScale: 1.0, callOverheadSec: 4,  parallelEfficiency: 1.0 },
+}
+
+function providerProfile(provider: string | undefined): ProviderProfile {
+  return PROVIDER_PROFILES[provider ?? ''] ?? PROVIDER_PROFILES.claude
+}
+
+// Output-token throughput by model family (tokens/sec) at the API baseline.
+// `providerProfile().tpScale` adjusts these for slower paths (claude-code,
+// ollama). Intentionally conservative so the elapsed counter rarely
+// overshoots the ETA.
+function baseThroughputTokPerSec(model: string | undefined): number {
   const m = (model ?? '').toLowerCase()
   if (m.includes('haiku')) return 120
   if (m.includes('opus')) return 35
@@ -399,9 +433,9 @@ function throughputTokPerSec(model: string | undefined): number {
   return 60
 }
 
-// Per-call network/queue overhead. Small because cache reads are fast and
-// claude-code/claude both warm up quickly.
-const CALL_OVERHEAD_SEC = 4
+function throughputTokPerSec(model: string | undefined, profile: ProviderProfile): number {
+  return baseThroughputTokPerSec(model) * profile.tpScale
+}
 
 // Schema block sizes (chars) — pulled from the adapter source. Constants
 // keep this estimator decoupled from the adapter; if you change a schema,
@@ -444,6 +478,7 @@ function estimateLlmUsage(
   const compactChars = compactFull.length
   const baseSysChars = 280       // base instruction prefix
   const userWrapperChars = 200   // "Here is the structural analysis…" framing
+  const profile = providerProfile(config.ai.provider)
 
   if (strategy === 'single') {
     const skill = loadDocsSkill({ lean })
@@ -465,8 +500,8 @@ function estimateLlmUsage(
       (wantServices ? svcOutPerRepo * repoCount : 0) +
       (wantGs ? OUTPUT_TOK.gettingStarted : 0)
     // Single mode: ETA is dominated by output streaming time at the primary
-    // model's throughput, plus one overhead.
-    const estimatedSec = Math.round(outputTokens / throughputTokPerSec(config.ai.model) + CALL_OVERHEAD_SEC)
+    // model's throughput, plus one provider-specific overhead.
+    const estimatedSec = Math.round(outputTokens / throughputTokPerSec(config.ai.model, profile) + profile.callOverheadSec)
     return { inputTokens: tok(inputChars), outputTokens, callCount: 1, compactChars, apiReference, estimatedSec }
   }
 
@@ -495,40 +530,49 @@ function estimateLlmUsage(
   let inputChars = 0
   let outputTokens = 0
   let callCount = 0
-  const primaryTp = throughputTokPerSec(config.ai.model)
+  const primaryTp = throughputTokPerSec(config.ai.model, profile)
   // modelFast defaults to 'haiku' on claude, primary elsewhere. Fall back to
   // the same throughput if no modelFast is configured.
   const fastTp = config.ai.modelFast
-    ? throughputTokPerSec(config.ai.modelFast)
-    : (config.ai.provider === 'claude' ? throughputTokPerSec('haiku') : primaryTp)
+    ? throughputTokPerSec(config.ai.modelFast, profile)
+    : (config.ai.provider === 'claude' ? throughputTokPerSec('haiku', profile) : primaryTp)
 
   // Sequential first call (overview + integrations) uses the primary model.
   let sequentialSec = 0
-  // Parallel calls run concurrently — wall-clock = the SLOWEST of them.
+  // Parallel calls — track both worst-case-single (max, the API ideal) and
+  // sum (the serial worst-case). We blend by parallelEfficiency below.
   let parallelMaxSec = 0
+  let parallelSumSec = 0
   if (wantOverview) {
     inputChars += ovInput
     const ovOut = OUTPUT_TOK.overview + OUTPUT_TOK.integrations
     outputTokens += ovOut
     callCount += 1
-    sequentialSec += ovOut / primaryTp + CALL_OVERHEAD_SEC
+    sequentialSec += ovOut / primaryTp + profile.callOverheadSec
   }
   if (wantServices) {
     inputChars += repoCount * svcInput
     const svcOut = apiReference ? OUTPUT_TOK.serviceWithApiRef : OUTPUT_TOK.serviceWithoutApiRef
     outputTokens += repoCount * svcOut
     callCount += repoCount
-    const svcSec = svcOut / fastTp + CALL_OVERHEAD_SEC
+    const svcSec = svcOut / fastTp + profile.callOverheadSec
     if (svcSec > parallelMaxSec) parallelMaxSec = svcSec
+    parallelSumSec += repoCount * svcSec
   }
   if (wantGs) {
     inputChars += gsInput
     outputTokens += OUTPUT_TOK.gettingStarted
     callCount += 1
-    const gsSec = OUTPUT_TOK.gettingStarted / fastTp + CALL_OVERHEAD_SEC
+    const gsSec = OUTPUT_TOK.gettingStarted / fastTp + profile.callOverheadSec
     if (gsSec > parallelMaxSec) parallelMaxSec = gsSec
+    parallelSumSec += gsSec
   }
 
-  const estimatedSec = Math.round(sequentialSec + parallelMaxSec)
+  // Blend max (perfect parallelism) and sum (serial) by the provider's
+  // measured efficiency. claude → ~max, claude-code → ~sum, ollama → sum.
+  const eff = profile.parallelEfficiency
+  const parallelWallSec = eff * parallelMaxSec + (1 - eff) * parallelSumSec
+
+  const estimatedSec = Math.round(sequentialSec + parallelWallSec)
   return { inputTokens: tok(inputChars), outputTokens, callCount, compactChars, apiReference, estimatedSec }
 }

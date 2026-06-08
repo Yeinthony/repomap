@@ -753,9 +753,10 @@ program
 program
   .command('serve')
   .description('Open the generated docs in your browser (with live-reload)')
+  .option('-c, --config <path>', 'Path to config file', 'repomap.config.yml')
   .option('-p, --port <port>', 'Port number', '4040')
   .option('--host <host>', 'Host/interface to bind (use 0.0.0.0 to expose to LAN)', 'localhost')
-  .option('-d, --dir <path>', 'Docs directory', './repomap-docs')
+  .option('-d, --dir <path>', 'Docs directory (default: output.path from config, or ./repomap-docs)')
   .option('--lang <language>', 'Override language: en | es')
   .option('--no-open', "Don't open the browser automatically")
   .option('--no-reload', 'Disable live-reload (don\'t watch the docs dir)')
@@ -766,7 +767,7 @@ program
     const open = (await import('open')).default
     const chokidar = (await import('chokidar')).default
 
-    const docsDir = path.resolve(options.dir)
+    const docsDir = resolveServeDir(options)
     if (!existsSync(docsDir)) {
       console.error(chalk.red(tCli(lang, 'serveDirMissing')(docsDir)))
       console.log(chalk.dim(tCli(lang, 'serveRunGeneratePrefix')), chalk.cyan('repomap generate'), chalk.dim(tCli(lang, 'serveRunGenerate')))
@@ -2091,6 +2092,29 @@ function printRegistryHint(found: FoundConfig, lang: CliLang): void {
     }
     console.log(chalk.dim('  ' + tCli(lang, 'configFromRegistryPickHint')))
   }
+}
+
+// `serve` doesn't need a full config — just the output path. We do a soft
+// lookup so missing yml falls back to ./repomap-docs instead of exiting.
+// Precedence: --dir flag > config.output.path > built-in default.
+function resolveServeDir(options: any): string {
+  if (options.dir) return path.resolve(options.dir)
+  const found = findConfigPath(options)
+  if (fs.existsSync(found.path)) {
+    try {
+      const raw = fs.readFileSync(found.path, 'utf-8')
+      const cfg = yaml.parse(raw) as RepomapConfig
+      if (cfg?.output?.path) {
+        const configDir = path.dirname(found.path)
+        return path.isAbsolute(cfg.output.path)
+          ? cfg.output.path
+          : path.resolve(configDir, cfg.output.path)
+      }
+    } catch {
+      // Bad yml — fall through to the built-in default.
+    }
+  }
+  return path.resolve('./repomap-docs')
 }
 
 // Precedence: CLI flags > config file > built-in defaults.
